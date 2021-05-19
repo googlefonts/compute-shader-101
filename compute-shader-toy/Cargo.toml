@@ -1,0 +1,12 @@
+[package]
+name = "compute-shader-toy"
+version = "0.1.0"
+authors = ["Raph Levien <raph@google.com>"]
+license = "MIT/Apache-2.0"
+edition = "2018"
+
+[dependencies]
+wgpu = { version = "0.8.1", features = ["cross"] }
+winit = "0.24"
+pollster = "0.2"
+async-executor = "1.0"
