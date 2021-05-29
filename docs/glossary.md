@@ -38,7 +38,7 @@ Communication between threads using subgroup operations is often much faster tha
 
 The size of a subgroup is a major concern for performance tuning. On Nvidia hardware, it can be assumed to be 32, but for portability, usually ranges from 8 to 64, with 128 as a possibility on some mobile hardware (Adreno, optionally, plus Imagination). On some GPUs, the subgroup size is fixed, but on many it is dynamic; on these GPUs it is difficult to reliably know or control the subgroup size unless the subgroup size extension is available.
 
-A warning: subgroup operations can be a source of portability concerns. Not all GPUs support all subgroup operations (DX12 is missing a nonuniform version of subgroup broadcast; [WaveReadLaneAt](https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/wavereadlaneat) requires the lane index to be dynamically uniform), and dealing with the diversity of subgroup sizes is also a challenge. The discussion in [gpuweb#954] is illuminating, for more detail.
+A warning: subgroup operations can be a source of portability concerns. Not all GPUs support all subgroup operations, and dealing with the diversity of subgroup sizes is also a challenge. The discussion in [gpuweb#954] is illuminating, for more detail.
 
 Even aside from using explicit subgroup operations, awareness of subgroup structure is relevant for performance, for a variety of reasons. For one, the performance cost of branch divergence generally respects subgroup granularities; if all threads in a subgroup have the same branch, the cost is much lower. In addition, uniform memory reads are generally amortized across the threads in a subgroup, though multiple reads by different subgroups of a workgroup-uniform location will generally hit in L1 cache.
 
@@ -51,6 +51,8 @@ Resources:
 ### Workgroup (Vulkan, WebGPU); Threadgroup (Metal); Thread Block (CUDA)
 
 One of the main purposes of organizing threads into workgroups is access to a shared memory buffer dedicated to the workgroup. Workgroups can also synchronize using barriers. This the highest level of hierarchy for which such synchronization is possible; there is *no* similar synchronization between workgroups in a dispatch.
+
+While the driver and shader compiler (usually) choose the subgroup size, the workgroup size is entirely up to the application author, up to the supported limits of the device. A limit of 1024 threads total is typical for desktop GPUs, but on mobile smaller limits are common; Vulkan merely requires it be at least 128. It should generally be larger than the subgroup size to avoid performance problems due to unused threads.
 
 ### Dispatch
 
