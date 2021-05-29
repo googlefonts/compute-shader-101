@@ -40,6 +40,10 @@ Both GLSL and WGSL are fairly primitive and low-level, not far removed from thei
 
 There are potentially many other paths to compute shader IR, including [IREE] which is mostly targeting machine learning applications.
 
+## Additional resources
+
+There are some more resources in the [docs/](./docs/) subdirectory, including a [glossary](./docs/glossary.md).
+
 ## Contributing
 
 This resource is open source and we welcome contributions to improve it. See [CONTRIBUTING.md] for more details.
