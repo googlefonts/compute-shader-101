@@ -1,0 +1,12 @@
+[package]
+name = "piet-compute-toy"
+version = "0.1.0"
+authors = ["Raph Levien <raph.levien@gmail.com>"]
+description = "A simple compute shader example that draws in a window, based on piet-gpu-hal."
+license = "MIT/Apache-2.0"
+edition = "2018"
+
+
+[dependencies]
+winit = "0.25"
+piet-gpu-hal = { git = "https://github.com/linebender/piet-gpu", rev = "bae185" }

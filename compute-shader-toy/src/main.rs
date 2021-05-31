@@ -14,7 +14,7 @@
 //
 // Also licensed under MIT license, at your choice.
 
-//! A simple 
+//! A simple compute shader example that draws into a window, based on wgpu.
 
 use wgpu::Extent3d;
 use winit::{

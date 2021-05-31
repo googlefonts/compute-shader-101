@@ -3,6 +3,7 @@ name = "compute-shader-toy"
 version = "0.1.0"
 authors = ["Raph Levien <raph@google.com>"]
 license = "MIT/Apache-2.0"
+description = "A simple compute shader example that draws in a window, based on wgpu."
 edition = "2018"
 
 [dependencies]
