@@ -64,6 +64,12 @@ Conceptually, all of the threads in a dispatch are executed in parallel, though 
 
 A dispatch gets access to its input and output buffers through a descriptor set.
 
+### Compute shader vs kernel
+
+The distinction between compute shader and kernel is blurry, and Metal especially splits the difference by using the term "kernel" for its compute shader capability. Generally a compute shader integrates seamlessly with other graphics rendering primitives, while OpenCL and CUDA kernels require their own separate runtime (possibly with interop features). Tools like [clvk] also blur the distinction, by providing a layer to run OpenCL-compatible kernels on compute shader infrastructure.
+
+Further confusing the issue is the fact that SPIR-V exists in two flavors, one for OpenCL kernels and one for (compute) shaders; these are distinguished by the "Execution Model" field in the SPIR-V header. In the kernel execution model, pointers are enabled by default, while in compute shaders they are extensions.
+
 ### Command buffer (Vulkan, Metal, WebGPU); Command list (DX12)
 
 A command buffer is a sequence of commands, of which the main substance is compute dispatches, but there are a bunch of other commands required to glue these together: pipeline barriers (see below), buffer copies, etc.
@@ -214,3 +220,4 @@ Resources:
 [ISPC]: https://ispc.github.io/
 [Vulkan Memory Types on PC and How to Use Them]: https://asawicki.info/news_1740_vulkan_memory_types_on_pc_and_how_to_use_them
 [System and driver support for Resizable BAR]: https://docs.microsoft.com/en-us/windows-hardware/drivers/display/resizable-bar-support
+[clvk]: https://github.com/kpet/clvk
