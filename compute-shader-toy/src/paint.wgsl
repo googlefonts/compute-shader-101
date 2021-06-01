@@ -14,11 +14,23 @@
 //
 // Also licensed under MIT license, at your choice.
 
-[[group(0), binding(0)]] var outputTex: [[access(write)]] texture_storage_2d<rgba8unorm>;
+[[block]]
+struct Params {
+    width: u32;
+    height: u32;
+    iTime: f32;
+};
+
+[[group(0), binding(0)]] var params: [[access(read)]] Params;
+[[group(0), binding(1)]] var outputTex: [[access(write)]] texture_storage_2d<rgba8unorm>;
 
 [[stage(compute), workgroup_size(16, 16)]]
 fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
-    let rgba: vec4<f32> = vec4<f32>(1.0, 0.0, 0.0, 1.0);
-    let write_ix = vec2<i32>(i32(global_ix.x), i32(global_ix.y));
-    textureStore(outputTex, write_ix, rgba);
+    let fragCoord: vec2<f32> = vec2<f32>(global_ix.xy) / vec2<f32>(f32(params.width), f32(params.height))
+        - vec2<f32>(0.5, 0.5);
+
+    // Shadertoy-like code can go here.
+    let fragColor: vec4<f32> = vec4<f32>(fragCoord.x + 0.5, fragCoord.y + 0.5, sin(params.iTime), 1.0);
+
+    textureStore(outputTex, vec2<i32>(global_ix.xy), fragColor);
 }
