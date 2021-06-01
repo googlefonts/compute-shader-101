@@ -9,12 +9,11 @@ rule glsl
   command = $glslang_validator -V -o $out $in
 
 rule hlsl
-  command = $spirv_cross --hlsl $in --output $out
+  command = $spirv_cross --hlsl --shader-model 50 $in --output $out
 
 rule msl
   command = $spirv_cross --msl $in --output $out
 
 build gen/shader.spv: glsl shader.comp
-# TODO: fix "Separate image and samplers not supported in legacy HLSL" error
-#build gen/shader.hlsl: hlsl gen/shader.spv
+build gen/shader.hlsl: hlsl gen/shader.spv
 build gen/shader.msl: msl gen/shader.spv

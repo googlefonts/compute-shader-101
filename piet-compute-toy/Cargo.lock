@@ -707,7 +707,7 @@ dependencies = [
 [[package]]
 name = "piet-gpu-hal"
 version = "0.1.0"
-source = "git+https://github.com/linebender/piet-gpu?rev=bae185#bae185efbdc74441ca6d87f7440cfa00d160c02b"
+source = "git+https://github.com/linebender/piet-gpu?rev=074fafa#074fafad1e81fe2a167ea7d4609e91261d8da5fe"
 dependencies = [
  "ash",
  "ash-window",

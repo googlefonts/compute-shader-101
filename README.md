@@ -18,6 +18,8 @@ The second subdirectory is a simple GUI application that runs a compute shader a
 
 Recommended activity: find an existing shadertoy that implements some interesting algorithm or visual effect, and port it to run in a compute shader. Is there some limitation of the original that could be improved by compute capabilities?
 
+A great place to find shaders to adapt is [The Book of Shaders].
+
 ## A note on the choice of runtime
 
 Your compute shader code cannot run on its own, but rather needs a *runtime* to connect to the GPU, set up resources such as buffers and compiled shader code, and manage the submission of that work to the GPU. There is, as of this writing, no standard runtime for such things, but I hope that will change in time.
@@ -66,3 +68,4 @@ Licensed under either of
 [Cg]: https://www.khronos.org/opengl/wiki/Cg
 [rust-gpu]: https://github.com/EmbarkStudios/rust-gpu
 [IREE]: https://google.github.io/iree/
+[The Book of Shaders]: https://thebookofshaders.com/
