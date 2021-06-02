@@ -9,4 +9,4 @@ edition = "2018"
 
 [dependencies]
 winit = "0.25"
-piet-gpu-hal = { git = "https://github.com/linebender/piet-gpu", rev = "074fafa" }
+piet-gpu-hal = { git = "https://github.com/linebender/piet-gpu", rev = "8b65942" }
