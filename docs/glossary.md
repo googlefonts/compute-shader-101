@@ -8,7 +8,7 @@ One barrier to learning and talking about GPU compute is the bewildering termino
 * [WebGPU](https://github.com/gpuweb/gpuweb) - [WebGPU shading language](https://gpuweb.github.io/gpuweb/wgsl/)
 * [CUDA](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html)
 
-My choice of 5 API's is somewhat opinionated, and future-leaning. I've left off OpenGL and OpenCL because they appear to be stagnating. Even though my main focus is writing compute shaders, because I'm interested in portability, I'm also including CUDA because it's by far the best developed API for writing GPU compute, and one that will no doubt be familiar to mamy readers.
+My choice of 5 API's is somewhat opinionated, and future-leaning. I've left off OpenGL and OpenCL because they appear to be stagnating. Even though my main focus is writing compute shaders, because I'm interested in portability, I'm also including CUDA because it's by far the best developed API for writing GPU compute, and one that will no doubt be familiar to many readers.
 
 I'm including WebGPU because I feel it has potential to become a common, widely implemented standard, on which it's possible to build a rich infrastructure of tools, libraries, and applications. The people working on WebGPU are doing a lot of deep thinking about achieving portability, performance, and security on GPU, and these discussions are openly available.
 
