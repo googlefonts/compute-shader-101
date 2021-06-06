@@ -4,7 +4,7 @@ This repo contains sample code to help you get started writing applications usin
 
 Compute shaders are a promising approach to tap the power of GPU compute in a portable way, but it's not easy to get started. Most real-world usage of compute shaders today is in the context of games, where they do physics simulation, advanced image effects, and more. Games already have infrastructure to connect to the GPU, detect varying levels of capability at runtime, and abstract away details of graphics drivers and shader language translation.
 
-To some extent compute shaders can be an alternative to CUDA, with a very different set of tradeoffs. The biggest advantage of compute shaders is portability, as they can run on most reasonably recent GPUs and are not tied to a specific hardware architecture. Proabbly the biggest shortcoming is lack of tool support.
+To some extent compute shaders can be an alternative to CUDA, with a very different set of tradeoffs. The biggest advantage of compute shaders is portability, as they can run on most reasonably recent GPUs and are not tied to a specific hardware architecture. Probably the biggest shortcoming is lack of tool support.
 
 ## compute-shader-hello
 
