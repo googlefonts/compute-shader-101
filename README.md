@@ -1,6 +1,6 @@
 # Sample code for Compute Shader 101
 
-This repo contains sample code to help you get started writing applications using compute shaders. It supplements a planned presentation including a video and slides (not ready yet).
+This repo contains sample code to help you get started writing applications using compute shaders. It supplements a presentation including a [video](https://www.youtube.com/watch?v=DZRn_jNZjbw) and [slides](https://docs.google.com/presentation/d/1dVSXORW6JurLUcx5UhE1_7EZHuXv8APjx2y_Bbs_1Vg/edit#slide=id.p).
 
 Compute shaders are a promising approach to tap the power of GPU compute in a portable way, but it's not easy to get started. Most real-world usage of compute shaders today is in the context of games, where they do physics simulation, advanced image effects, and more. Games already have infrastructure to connect to the GPU, detect varying levels of capability at runtime, and abstract away details of graphics drivers and shader language translation.
 
