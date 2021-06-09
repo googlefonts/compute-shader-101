@@ -17,7 +17,7 @@ use spirv_std::{
 
 #[spirv(compute(threads(16, 16)))]
 pub fn main(
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] config: &Config,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] config: &Config,
     #[spirv(descriptor_set = 0, binding = 1)] output_buffer: &image::StorageImage2d,
     #[spirv(global_invocation_id)] global_ix: UVec3,
 ) {
