@@ -1,0 +1,13 @@
+[package]
+name = "rust-gpu-toy-shaders"
+version = "0.1.0"
+authors = ["Raph Levien <raph@google.com>"]
+license = "MIT/Apache-2.0"
+description = "A simple compute shader example that draws in a window, based on wgpu."
+edition = "2018"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "c3eff4d4a5a52607aa3bc8b4ba8409f6659425ee", features = ["glam"] }

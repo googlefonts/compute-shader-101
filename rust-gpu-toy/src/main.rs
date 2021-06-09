@@ -16,8 +16,10 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
-use wgpu::util::DeviceExt;
-use wgpu::{BufferUsage, Extent3d};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use wgpu::util::{make_spirv, DeviceExt};
+use wgpu::{BufferUsage, Extent3d, ShaderModule};
 
 use winit::{
     event::{Event, WindowEvent},
@@ -25,7 +27,15 @@ use winit::{
     window::Window,
 };
 
-async fn run(event_loop: EventLoop<()>, window: Window) {
+use spirv_builder::{CompileResult, SpirvBuilder};
+
+const CONFIG_SIZE: u64 = 12;
+
+async fn run(
+    event_loop: EventLoop<CompileResult>,
+    window: Window,
+    initial_compilation: CompileResult,
+) {
     let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
     let surface = unsafe { instance.create_surface(&window) };
     let adapter = instance
@@ -42,24 +52,18 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .expect("error creating device");
     let size = window.inner_size();
     let swapchain_format = adapter.get_swap_chain_preferred_format(&surface).unwrap();
-    let mut sc_desc = wgpu::SwapChainDescriptor {
+    let sc_desc = wgpu::SwapChainDescriptor {
         usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
         format: swapchain_format,
         width: size.width,
         height: size.height,
         present_mode: wgpu::PresentMode::Mailbox,
     };
-    let mut swap_chain = device.create_swap_chain(&surface, &sc_desc);
+    let swap_chain = device.create_swap_chain(&surface, &sc_desc);
 
     // We use a render pipeline just to copy the output buffer of the compute shader to the
     // swapchain. It would be nice if we could skip this, but swapchains with storage usage
     // are not fully portable.
-    let shader_flags = wgpu::ShaderFlags::empty();
-    let copy_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(include_str!("copy.wgsl").into()),
-        flags: shader_flags,
-    });
     let copy_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -91,24 +95,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         bind_group_layouts: &[&copy_bind_group_layout],
         push_constant_ranges: &[],
     });
-    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: None,
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &copy_shader,
-            entry_point: "vs_main",
-            buffers: &[],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &copy_shader,
-            entry_point: "fs_main",
-            targets: &[swapchain_format.into()],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-    });
 
+    let module = create_shader_module(&initial_compilation, &device);
+
+    let mut render_pipeline =
+        create_render_pipeline(&device, &pipeline_layout, swapchain_format, &module);
     let img = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: Extent3d {
@@ -124,42 +115,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
     let img_view = img.create_view(&Default::default());
 
-    const CONFIG_SIZE: u64 = 12;
-
     let config_dev = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: CONFIG_SIZE,
         usage: BufferUsage::COPY_DST | BufferUsage::STORAGE,
         mapped_at_creation: false,
     });
-    let config_resource = config_dev.as_entire_binding();
 
-    let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(include_str!("paint.wgsl").into()),
-        flags: shader_flags,
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None,
-        layout: None,
-        module: &cs_module,
-        entry_point: "main",
-    });
-    let bind_group_layout = pipeline.get_bind_group_layout(0);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: config_resource,
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&img_view),
-            },
-        ],
-    });
+    let (mut pipeline, mut bind_group) =
+        create_compute_pipeline(&device, &img_view, &config_dev, &module);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -237,13 +201,121 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 event: WindowEvent::CloseRequested,
                 ..
             } => *control_flow = ControlFlow::Exit,
+            Event::UserEvent(result) => {
+                let module = create_shader_module(&result, &device);
+                render_pipeline =
+                    create_render_pipeline(&device, &pipeline_layout, swapchain_format, &module);
+                let (new_pipeline, new_bind_group) =
+                    create_compute_pipeline(&device, &img_view, &config_dev, &module);
+                pipeline = new_pipeline;
+                bind_group = new_bind_group;
+            }
             _ => (),
         }
     });
 }
 
+fn create_shader_module(compilation: &CompileResult, device: &wgpu::Device) -> ShaderModule {
+    let shader_flags = wgpu::ShaderFlags::empty();
+    let spirv_path = compilation.module.unwrap_single();
+    let f = std::fs::read(spirv_path).expect("spirv should exist");
+    let shader = make_spirv(&f);
+    device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: shader,
+        flags: shader_flags,
+    })
+}
+
+fn create_compute_pipeline(
+    device: &wgpu::Device,
+    img_view: &wgpu::TextureView,
+    config_dev: &wgpu::Buffer,
+    shader: &wgpu::ShaderModule,
+) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
+    let config_resource = config_dev.as_entire_binding();
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: None,
+        module: &shader,
+        entry_point: "main",
+    });
+    let bind_group_layout = pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: config_resource,
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(img_view),
+            },
+        ],
+    });
+    (pipeline, bind_group)
+}
+
+fn create_render_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    swapchain_format: wgpu::TextureFormat,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[swapchain_format.into()],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+    });
+    render_pipeline
+}
+
 fn main() {
-    let event_loop = EventLoop::new();
+    let (initial_tx, initial_rx) = std::sync::mpsc::sync_channel(0);
+    let event_loop = EventLoop::with_user_event();
+    let proxy = event_loop.create_proxy();
+    let has_sent_first = AtomicBool::new(false);
+    // Watch for changes on a background thread
+    let thread = std::thread::spawn(|| {
+        SpirvBuilder::new("./shaders", "spirv-unknown-vulkan1.2")
+            .print_metadata(spirv_builder::MetadataPrintout::None)
+            .watch(move |result| {
+                if let Ok(_) =
+                    // TODO: This use of atomics is signic
+                    has_sent_first.compare_exchange(
+                        false,
+                        true,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                {
+                    initial_tx.send(result).unwrap();
+                } else {
+                    proxy
+                        .send_event(result)
+                        .expect("Event loop should still be running");
+                }
+            })
+            .expect("Correctly setup")
+    });
+    std::mem::forget(thread);
+    let initial = initial_rx
+        .recv()
+        .expect("Watching should get an initial shader");
     let window = Window::new(&event_loop).unwrap();
-    pollster::block_on(run(event_loop, window));
+    pollster::block_on(run(event_loop, window, initial));
 }
