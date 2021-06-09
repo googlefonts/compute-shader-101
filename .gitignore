@@ -1,4 +1,5 @@
 target
 .ninja_deps
 .ninja_log
-
+Cargo.lock
+!piet-compute-toy/Cargo.lock
