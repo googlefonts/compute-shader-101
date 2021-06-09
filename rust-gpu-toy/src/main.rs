@@ -299,6 +299,7 @@ fn main() {
     let thread = std::thread::spawn(|| {
         SpirvBuilder::new("./shaders", "spirv-unknown-vulkan1.2")
             .print_metadata(spirv_builder::MetadataPrintout::None)
+            .capability(spirv_builder::Capability::StorageImageWriteWithoutFormat)
             .watch(move |result| {
                 if let Ok(_) =
                     // TODO: This use of atomics is signic
