@@ -16,6 +16,7 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rust_gpu_toy_shared::Config;
@@ -30,7 +31,7 @@ use winit::{
 
 use spirv_builder::{CompileResult, SpirvBuilder};
 
-const CONFIG_SIZE: u64 = 12;
+const CONFIG_SIZE: u64 = std::mem::size_of::<Config>() as u64;
 
 async fn run(
     event_loop: EventLoop<CompileResult>,
@@ -52,7 +53,7 @@ async fn run(
         .await
         .expect("error creating device");
     let size = window.inner_size();
-    let swapchain_format = adapter.get_swap_chain_preferred_format(&surface).unwrap();
+    let swapchain_format = adapter.get_swap_chain_preferred_format(&surface);
     let sc_desc = wgpu::SwapChainDescriptor {
         usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
         format: swapchain_format,
@@ -106,7 +107,7 @@ async fn run(
         size: Extent3d {
             width: size.width,
             height: size.height,
-            depth_or_array_layers: 1,
+            depth: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -123,8 +124,53 @@ async fn run(
         mapped_at_creation: false,
     });
 
-    let (mut pipeline, mut bind_group) =
-        create_compute_pipeline(&device, &img_view, &config_dev, &module);
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Compute Bind Group Layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStage::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(CONFIG_SIZE),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStage::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ],
+    });
+    let config_resource = config_dev.as_entire_binding();
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: config_resource,
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&img_view),
+            },
+        ],
+    });
+    let compute_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    let mut pipeline = create_compute_pipeline(&device, &module, &compute_layout);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -184,8 +230,8 @@ async fn run(
                 {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
-                        color_attachments: &[wgpu::RenderPassColorAttachment {
-                            view: &frame.view,
+                        color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
+                            attachment: &frame.view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
@@ -211,10 +257,7 @@ async fn run(
                 let module = create_shader_module(&result, &device);
                 render_pipeline =
                     create_render_pipeline(&device, &pipeline_layout, swapchain_format, &module);
-                let (new_pipeline, new_bind_group) =
-                    create_compute_pipeline(&device, &img_view, &config_dev, &module);
-                pipeline = new_pipeline;
-                bind_group = new_bind_group;
+                pipeline = create_compute_pipeline(&device, &module, &compute_layout);
             }
             _ => (),
         }
@@ -235,33 +278,15 @@ fn create_shader_module(compilation: &CompileResult, device: &wgpu::Device) -> S
 
 fn create_compute_pipeline(
     device: &wgpu::Device,
-    img_view: &wgpu::TextureView,
-    config_dev: &wgpu::Buffer,
     shader: &wgpu::ShaderModule,
-) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
-    let config_resource = config_dev.as_entire_binding();
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
-        layout: None,
+        layout: Some(&layout),
         module: &shader,
         entry_point: "main",
-    });
-    let bind_group_layout = pipeline.get_bind_group_layout(0);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: config_resource,
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(img_view),
-            },
-        ],
-    });
-    (pipeline, bind_group)
+    })
 }
 
 fn create_render_pipeline(

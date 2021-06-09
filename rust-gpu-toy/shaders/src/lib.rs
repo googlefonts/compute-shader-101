@@ -24,6 +24,8 @@ pub fn main(
     let frag_coord = global_ix.truncate().as_f32()
         / vec2(config.width as f32, config.height as f32)
         - vec2(0.5, 0.5);
+
+    // Shadertoy like code goes here
     let frag_color = vec4(
         frag_coord.x + 0.5,
         frag_coord.y + 0.5,
