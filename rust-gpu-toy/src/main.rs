@@ -18,6 +18,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rust_gpu_toy_shared::Config;
 use wgpu::util::{make_spirv, DeviceExt};
 use wgpu::{BufferUsage, Extent3d, ShaderModule};
 
@@ -161,10 +162,15 @@ async fn run(
                     .output;
 
                 let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
-                let config_data = [size.width, size.height, i_time.to_bits()];
+                let config = Config {
+                    width: size.width,
+                    height: size.height,
+                    time: i_time,
+                };
+                // In theory, this should use push constants (maybe?)
                 let config_host = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
-                    contents: bytemuck::bytes_of(&config_data),
+                    contents: bytemuck::bytes_of(&config),
                     usage: BufferUsage::COPY_SRC,
                 });
                 let mut encoder = device.create_command_encoder(&Default::default());
