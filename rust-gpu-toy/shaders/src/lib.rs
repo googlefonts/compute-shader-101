@@ -18,8 +18,8 @@ use spirv_std::{
 
 #[spirv(compute(threads(16, 16)))]
 pub fn main(
-    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] config: &Config,
-    #[spirv(descriptor_set = 0, binding = 1)] output_buffer: &image::StorageImage2d,
+    #[spirv(push_constant)] config: &Config,
+    #[spirv(descriptor_set = 0, binding = 0)] output_buffer: &image::StorageImage2d,
     #[spirv(global_invocation_id)] global_ix: UVec3,
 ) {
     let frag_coord = global_ix.truncate().as_f32()
