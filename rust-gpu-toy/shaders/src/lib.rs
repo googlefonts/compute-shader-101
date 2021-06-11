@@ -8,6 +8,7 @@
 use rust_gpu_toy_shared::Config;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
+#[cfg(target_arch = "spirv")]
 use spirv_std::num_traits::Float;
 
 use spirv_std::{

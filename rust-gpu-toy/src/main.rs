@@ -53,7 +53,7 @@ async fn run(
         .await
         .expect("error creating device");
     let size = window.inner_size();
-    let swapchain_format = adapter.get_swap_chain_preferred_format(&surface);
+    let swapchain_format = adapter.get_swap_chain_preferred_format(&surface).unwrap();
     let sc_desc = wgpu::SwapChainDescriptor {
         usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
         format: swapchain_format,
@@ -107,7 +107,7 @@ async fn run(
         size: Extent3d {
             width: size.width,
             height: size.height,
-            depth: 1,
+            depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -230,8 +230,8 @@ async fn run(
                 {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
-                        color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                            attachment: &frame.view,
+                        color_attachments: &[wgpu::RenderPassColorAttachment {
+                            view: &frame.view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
