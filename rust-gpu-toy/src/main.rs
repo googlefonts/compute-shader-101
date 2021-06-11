@@ -139,6 +139,7 @@ impl State {
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.sc_desc.width = new_size.width;
         self.sc_desc.height = new_size.height;
+        self.size = new_size;
         let new_swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
         self.swap_chain = new_swap_chain;
         let (compute_bind_group, copy_bind_group) =
