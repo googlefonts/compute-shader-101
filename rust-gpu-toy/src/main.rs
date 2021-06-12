@@ -57,7 +57,7 @@ struct State {
     queue: wgpu::Queue,
 
     sc_desc: wgpu::SwapChainDescriptor,
-    swap_chain: wgpu::SwapChain,
+    swap_chain: Option<wgpu::SwapChain>,
     size: winit::dpi::PhysicalSize<u32>,
 
     sampler: wgpu::Sampler,
@@ -127,7 +127,7 @@ impl State {
             device,
             queue,
             sc_desc,
-            swap_chain,
+            swap_chain: Some(swap_chain),
             size,
             sampler,
             compute_bind_group: compute_group,
@@ -137,15 +137,19 @@ impl State {
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        self.sc_desc.width = new_size.width;
-        self.sc_desc.height = new_size.height;
-        self.size = new_size;
-        let new_swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
-        self.swap_chain = new_swap_chain;
-        let (compute_bind_group, copy_bind_group) =
-            State::bind_for_size(&self.device, &self.sampler, new_size, &self.layouts);
-        self.compute_bind_group = compute_bind_group;
-        self.copy_bind_group = copy_bind_group;
+        if new_size.width != 0 && new_size.height != 0 {
+            self.sc_desc.width = new_size.width;
+            self.sc_desc.height = new_size.height;
+            self.size = new_size;
+            let new_swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
+            self.swap_chain = Some(new_swap_chain);
+            let (compute_bind_group, copy_bind_group) =
+                State::bind_for_size(&self.device, &self.sampler, new_size, &self.layouts);
+            self.compute_bind_group = compute_bind_group;
+            self.copy_bind_group = copy_bind_group;
+        } else {
+            self.swap_chain = None;
+        }
     }
 
     fn bind_for_size(
@@ -310,46 +314,47 @@ impl State {
     }
 
     fn render_frame(&self) {
-        let frame = self
-            .swap_chain
-            .get_current_frame()
-            .expect("error getting frame from swap chain")
-            .output;
+        if let Some(chain) = &self.swap_chain {
+            let frame = chain
+                .get_current_frame()
+                .expect("error getting frame from swap chain")
+                .output;
 
-        let i_time: f32 = 0.5 + self.start_time.elapsed().as_micros() as f32 * 1e-6;
-        let size = self.size;
-        let config = Config {
-            width: size.width,
-            height: size.height,
-            time: i_time,
-        };
+            let i_time: f32 = 0.5 + self.start_time.elapsed().as_micros() as f32 * 1e-6;
+            let size = self.size;
+            let config = Config {
+                width: size.width,
+                height: size.height,
+                time: i_time,
+            };
 
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        {
-            let mut cpass = encoder.begin_compute_pass(&Default::default());
-            cpass.set_pipeline(&self.pipelines.compute_pipeline);
-            cpass.set_push_constants(0, bytemuck::bytes_of(&config));
-            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-            cpass.dispatch(size.width / 16, size.height / 16, 1);
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut cpass = encoder.begin_compute_pass(&Default::default());
+                cpass.set_pipeline(&self.pipelines.compute_pipeline);
+                cpass.set_push_constants(0, bytemuck::bytes_of(&config));
+                cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+                cpass.dispatch(size.width / 16, size.height / 16, 1);
+            }
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[wgpu::RenderPassColorAttachment {
+                        view: &frame.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                            store: true,
+                        },
+                    }],
+                    depth_stencil_attachment: None,
+                });
+                rpass.set_pipeline(&self.pipelines.copy_pipeline);
+                rpass.set_bind_group(0, &self.copy_bind_group, &[]);
+                rpass.draw(0..3, 0..2);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: true,
-                    },
-                }],
-                depth_stencil_attachment: None,
-            });
-            rpass.set_pipeline(&self.pipelines.copy_pipeline);
-            rpass.set_bind_group(0, &self.copy_bind_group, &[]);
-            rpass.draw(0..3, 0..2);
-        }
-        self.queue.submit(Some(encoder.finish()));
     }
 }
 
