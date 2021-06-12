@@ -334,7 +334,8 @@ impl State {
                 cpass.set_pipeline(&self.pipelines.compute_pipeline);
                 cpass.set_push_constants(0, bytemuck::bytes_of(&config));
                 cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-                cpass.dispatch(size.width / 16, size.height / 16, 1);
+                // Round up to next multiple
+                cpass.dispatch((size.width + 16 - 1) / 16, (size.height + 16 - 1) / 16, 1);
             }
             {
                 let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

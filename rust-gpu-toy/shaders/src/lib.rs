@@ -34,7 +34,13 @@ pub fn main(
         1.0,
     );
 
-    unsafe { output_buffer.write(global_ix.truncate(), frag_color) }
+    // Without the int8 capability, can't use bools
+    // A better choice might be to just enable the int8 capability
+    if global_ix.x < config.width {
+        if global_ix.y < config.height {
+            unsafe { output_buffer.write(global_ix.truncate(), frag_color) }
+        }
+    }
 }
 
 // A simple vert/frag shader to copy an image to the swapchain.
