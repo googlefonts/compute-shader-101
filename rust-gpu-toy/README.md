@@ -1,12 +1,16 @@
 # Compute shader toy based on wgpu
 
-This is a starting point for running compute shaders and drawing the image output into a window, based on [wgpu]. You should be able to change the shader (paint.wgsl) and run using simply `cargo run`.
+This is a starting point for running compute shaders and drawing the image output into a window, based on [wgpu] and [rust-gpu]. You should be able to change the [`shader`] and run using simply `cargo run --release`.
 
-If there are syntax errors in the shader, the error message can be pretty cryptic. It might be useful to run [naga] from the commandline to validate the shader code.
+Using release mode is recommended because the compilation backend (`rustc_codegen_spirv`) runs very slowly when compiled without optimisations.
 
-The shading language for this example is [WGSL], translated by naga, but it is possible to run wgpu in native mode with SPIR-V shaders as well. At the time of this writing, compute shaders are blocked on [naga#875], but when the fix for that lands, the experience should be better, and that will also open up features like atomics (and possibly subgroup operations) that are not presently supported by the wgpu stack.
+The shading language for this example is [rust-gpu], which produces SPIR-V shaders.
 
-[naga]: https://github.com/gfx-rs/naga
+These shaders are reloaded automatically upon saving, without needing to restart the window.
+
 [wgpu]: https://wgpu.rs/
+[rust-gpu]: https://github.com/EmbarkStudios/rust-gpu
+[naga]: https://github.com/gfx-rs/naga
 [WGSL]: https://gpuweb.github.io/gpuweb/wgsl/
 [naga#975]: https://github.com/gfx-rs/naga/issues/875
+[`shader`]: ./shaders/src/lib.rs
