@@ -11,9 +11,9 @@ wgpu = "0.8"
 winit = "0.25"
 pollster = "0.2"
 async-executor = "1.0"
-bytemuck = "1.5.1"
+bytemuck = "1.6.3"
 spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "c3eff4d4a5a52607aa3bc8b4ba8409f6659425ee", features = ["watch"] }
-rust-gpu-toy-shared = { path = "./shared", features = ["bytemuck"] }
+rust-gpu-toy-shared = { path = "./shared" }
 
 [workspace]
 members = ["./shaders", "./shared"]

@@ -7,4 +7,4 @@ description = "Definitions shared between the compute shader and the output, suc
 edition = "2018"
 
 [dependencies]
-bytemuck = { version = "1.5.1", optional = true, features = ["derive"] }
+bytemuck = { version = "1.6.3", features = ["derive"] }
