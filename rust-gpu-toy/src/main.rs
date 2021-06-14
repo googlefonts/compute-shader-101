@@ -16,7 +16,6 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use rust_gpu_toy_shared::Config;
@@ -393,39 +392,15 @@ async fn run(
 }
 
 fn main() {
-    let (initial_tx, initial_rx) = std::sync::mpsc::sync_channel(0);
     let event_loop = EventLoop::with_user_event();
     let proxy = event_loop.create_proxy();
-    // This is going to be cleaned up significantly by https://github.com/EmbarkStudios/rust-gpu/pull/663
-    let has_sent_first = AtomicBool::new(false);
     // Watch for changes on a background thread
-    let thread = std::thread::spawn(|| {
-        SpirvBuilder::new("./shaders", "spirv-unknown-vulkan1.2")
-            .print_metadata(spirv_builder::MetadataPrintout::None)
-            .capability(spirv_builder::Capability::StorageImageWriteWithoutFormat)
-            .watch(move |result| {
-                if let Ok(_) =
-                    // TODO: This use of atomics is signic
-                    has_sent_first.compare_exchange(
-                        false,
-                        true,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                {
-                    initial_tx.send(result).unwrap();
-                } else {
-                    proxy
-                        .send_event(result)
-                        .expect("Event loop should still be running");
-                }
-            })
-            .expect("Correctly setup")
-    });
-    std::mem::forget(thread);
-    let initial = initial_rx
-        .recv()
-        .expect("Watching should get an initial shader");
+    let initial_result = SpirvBuilder::new("./shaders", "spirv-unknown-vulkan1.2")
+        .print_metadata(spirv_builder::MetadataPrintout::None)
+        .capability(spirv_builder::Capability::StorageImageWriteWithoutFormat)
+        .watch(move |result| proxy.send_event(result).unwrap())
+        .expect("Correctly setup");
+
     let window = Window::new(&event_loop).unwrap();
-    pollster::block_on(run(event_loop, window, initial));
+    pollster::block_on(run(event_loop, window, initial_result));
 }
