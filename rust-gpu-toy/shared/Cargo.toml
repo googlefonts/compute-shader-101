@@ -1,0 +1,10 @@
+[package]
+name = "rust-gpu-toy-shared"
+version = "0.1.0"
+authors = ["Raph Levien <raph@google.com>"]
+license = "MIT/Apache-2.0"
+description = "Definitions shared between the compute shader and the output, such as layouts"
+edition = "2018"
+
+[dependencies]
+bytemuck = { version = "1.6.3", features = ["derive"] }

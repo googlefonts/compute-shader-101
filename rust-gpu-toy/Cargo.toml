@@ -1,0 +1,19 @@
+[package]
+name = "rust-gpu-toy"
+version = "0.1.0"
+authors = ["Raph Levien <raph@google.com>"]
+license = "MIT/Apache-2.0"
+description = "A simple compute shader example that draws in a window, based on wgpu and rust-gpu."
+edition = "2018"
+
+[dependencies]
+wgpu = "0.8"
+winit = "0.25"
+pollster = "0.2"
+async-executor = "1.0"
+bytemuck = "1.6.3"
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "e66e72b049a88f3ae1f7c54cd6823ae458612952", features = ["watch"] }
+rust-gpu-toy-shared = { path = "./shared" }
+
+[workspace]
+members = ["./shaders", "./shared"]
