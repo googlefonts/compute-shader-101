@@ -4,9 +4,10 @@ version = "0.1.0"
 authors = ["Raph Levien <raph@google.com>"]
 license = "MIT/Apache-2.0"
 edition = "2018"
+resolver = "2"
 
 [dependencies]
-wgpu = "0.8"
+wgpu = "0.10.1"
 env_logger = "0.8"
 pollster = "0.2"
-bytemuck = { version = "1.4", features = ["derive"] }
+bytemuck = { version = "1.7", features = ["derive"] }
