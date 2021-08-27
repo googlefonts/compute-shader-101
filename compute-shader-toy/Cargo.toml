@@ -5,10 +5,11 @@ authors = ["Raph Levien <raph@google.com>"]
 license = "MIT/Apache-2.0"
 description = "A simple compute shader example that draws in a window, based on wgpu."
 edition = "2018"
+resolver = "2"
 
 [dependencies]
-wgpu = { version = "0.8.1", features = ["cross"] }
+wgpu = { version = "0.10.1"}
 winit = "0.25"
 pollster = "0.2"
-async-executor = "1.0"
-bytemuck = "1.5.1"
+async-executor = "1.4"
+bytemuck = "1.7.1"

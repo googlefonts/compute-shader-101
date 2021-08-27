@@ -21,8 +21,8 @@ struct Params {
     iTime: f32;
 };
 
-[[group(0), binding(0)]] var params: [[access(read)]] Params;
-[[group(0), binding(1)]] var outputTex: [[access(write)]] texture_storage_2d<rgba8unorm>;
+[[group(0), binding(0)]] var params: Params;
+[[group(0), binding(1)]] var outputTex: texture_storage_2d<rgba8unorm,write>;
 
 [[stage(compute), workgroup_size(16, 16)]]
 fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
