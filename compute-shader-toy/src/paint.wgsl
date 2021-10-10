@@ -21,7 +21,7 @@ struct Params {
     iTime: f32;
 };
 
-[[group(0), binding(0)]] var params: Params;
+[[group(0), binding(0)]] var<uniform> params: Params;
 [[group(0), binding(1)]] var outputTex: texture_storage_2d<rgba8unorm,write>;
 
 [[stage(compute), workgroup_size(16, 16)]]

@@ -37,7 +37,6 @@ async fn run() {
         )
         .await
         .unwrap();
-    device.on_uncaptured_error(|e| panic!("{}", e));
     let query_set = if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         Some(device.create_query_set(&wgpu::QuerySetDescriptor {
             count: 2,

@@ -8,7 +8,7 @@ edition = "2018"
 resolver = "2"
 
 [dependencies]
-wgpu = { version = "0.10.1"}
+wgpu = { version = "0.11.0"}
 winit = "0.25"
 pollster = "0.2"
 async-executor = "1.4"

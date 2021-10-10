@@ -31,6 +31,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: Default::default(),
+            force_fallback_adapter: false,
             compatible_surface: Some(&surface),
         })
         .await
@@ -40,7 +41,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .request_device(&Default::default(), None)
         .await
         .expect("error creating device");
-    device.on_uncaptured_error(|e| panic!("{}", e));
     let size = window.inner_size();
     let format = surface.get_preferred_format(&adapter).unwrap();
     let sc = wgpu::SurfaceConfiguration {
@@ -190,9 +190,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         match event {
             Event::RedrawRequested(_) => {
                 let frame = surface
-                    .get_current_frame()
-                    .expect("error getting frame from swap chain")
-                    .output;
+                    .get_current_texture()
+                    .expect("error getting texture from swap chain");
 
                 let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
                 let config_data = [size.width, size.height, i_time.to_bits()];
@@ -228,6 +227,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     rpass.draw(0..3, 0..2);
                 }
                 queue.submit(Some(encoder.finish()));
+                frame.present();
             }
             Event::MainEventsCleared => {
                 window.request_redraw();
