@@ -16,13 +16,9 @@
 
 //! A simple application to run a compute shader.
 
-mod encode;
-
 use std::time::Instant;
 
 use wgpu::util::DeviceExt;
-
-use encode::Codable;
 
 async fn run() {
     let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -52,14 +48,14 @@ async fn run() {
     let start_instant = Instant::now();
     let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: None,
-        //source: wgpu::ShaderSource::SpirV(bytes_to_u32(include_bytes!("alu.spv")).into()),
+        //source: wgpu::ShaderSource::SpirV(bytemuck::cast_slice(include_bytes!("shader.spv")).into()),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
-    let input: Vec<u8> = Codable::encode_vec(&[1.0f32, 2.0f32]);
+    let input = bytemuck::bytes_of(&[1.0f32, 2.0f32]);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: &input,
+        contents: input,
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
@@ -122,30 +118,17 @@ async fn run() {
     println!("post-poll {:?}", std::time::Instant::now());
     if buf_future.await.is_ok() {
         let data = buf_slice.get_mapped_range();
-        let decoded: Vec<f32> = Codable::decode_vec(&*data);
+        let decoded: &[f32] = bytemuck::cast_slice(&*data);
         println!("data: {:?}", decoded);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();
-        let ts_data: Vec<u64> = Codable::decode_vec(&*query_slice.get_mapped_range());
-        let ts_data = ts_data
+        let ts_data = bytemuck::cast_slice(&*query_slice.get_mapped_range())
             .iter()
-            .map(|ts| *ts as f64 * ts_period as f64 * 1e-6)
+            .map(|ts: &u64| *ts as f64 * ts_period as f64 * 1e-6)
             .collect::<Vec<_>>();
         println!("compute shader elapsed: {:?}ms", ts_data[1] - ts_data[0]);
     }
-}
-
-#[allow(unused)]
-fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .chunks_exact(4)
-        .map(|b| {
-            let mut bytes = [0; 4];
-            bytes.copy_from_slice(b);
-            u32::from_le_bytes(bytes)
-        })
-        .collect()
 }
 
 fn main() {
