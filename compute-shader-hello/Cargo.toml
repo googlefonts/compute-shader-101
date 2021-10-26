@@ -4,9 +4,11 @@ version = "0.1.0"
 authors = ["Raph Levien <raph@google.com>"]
 license = "MIT/Apache-2.0"
 edition = "2018"
+# This resolver is needed so wgpu can configure its backends
+resolver = "2"
 
 [dependencies]
-wgpu = "0.8"
+wgpu = "0.11"
 env_logger = "0.8"
 pollster = "0.2"
-bytemuck = { version = "1.4", features = ["derive"] }
+bytemuck = "1.7.2"

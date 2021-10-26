@@ -25,7 +25,7 @@ use wgpu::util::DeviceExt;
 use encode::Codable;
 
 async fn run() {
-    let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
+    let instance = wgpu::Instance::new(wgpu::Backends::all());
     let adapter = instance.request_adapter(&Default::default()).await.unwrap();
     let features = adapter.features();
     let (device, queue) = adapter
@@ -39,17 +39,11 @@ async fn run() {
         )
         .await
         .unwrap();
-    let mut shader_flags = wgpu::ShaderFlags::VALIDATION;
-    if matches!(
-        adapter.get_info().backend,
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Gl
-    ) {
-        shader_flags |= wgpu::ShaderFlags::EXPERIMENTAL_TRANSLATION;
-    }
     let query_set = if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         Some(device.create_query_set(&wgpu::QuerySetDescriptor {
             count: 2,
             ty: wgpu::QueryType::Timestamp,
+            label: Some("timer_query"),
         }))
     } else {
         None
@@ -60,28 +54,27 @@ async fn run() {
         label: None,
         //source: wgpu::ShaderSource::SpirV(bytes_to_u32(include_bytes!("alu.spv")).into()),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        flags: shader_flags,
     });
     println!("shader compilation {:?}", start_instant.elapsed());
     let input: Vec<u8> = Codable::encode_vec(&[1.0f32, 2.0f32]);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: &input,
-        usage: wgpu::BufferUsage::STORAGE
-            | wgpu::BufferUsage::COPY_DST
-            | wgpu::BufferUsage::COPY_SRC,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
     });
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: input.len() as u64,
-        usage: wgpu::BufferUsage::MAP_READ | wgpu::BufferUsage::COPY_DST,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     // This works if the buffer is initialized, otherwise reads all 0, for some reason.
     let query_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: &[0; 16],
-        usage: wgpu::BufferUsage::MAP_READ | wgpu::BufferUsage::COPY_DST,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
 
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -129,7 +122,8 @@ async fn run() {
     println!("post-poll {:?}", std::time::Instant::now());
     if buf_future.await.is_ok() {
         let data = buf_slice.get_mapped_range();
-        println!("data: {:?}", &*data);
+        let decoded: Vec<f32> = Codable::decode_vec(&*data);
+        println!("data: {:?}", decoded);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();

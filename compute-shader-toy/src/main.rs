@@ -17,7 +17,7 @@
 //! A simple compute shader example that draws into a window, based on wgpu.
 
 use wgpu::util::DeviceExt;
-use wgpu::{BufferUsage, Extent3d};
+use wgpu::{BufferUsages, Extent3d};
 
 use winit::{
     event::{Event, WindowEvent},
@@ -25,40 +25,69 @@ use winit::{
     window::Window,
 };
 
-async fn run(event_loop: EventLoop<()>, window: Window) {
-    let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
-    let surface = unsafe { instance.create_surface(&window) };
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: Default::default(),
-            compatible_surface: Some(&surface),
-        })
-        .await
-        .expect("error finding adapter");
+struct Setup {
+    event_loop: EventLoop<()>,
+    window: Window,
+    instance: wgpu::Instance,
+    surface: wgpu::Surface,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
 
-    let (device, queue) = adapter
-        .request_device(&Default::default(), None)
-        .await
-        .expect("error creating device");
+impl Setup {
+    async fn create(event_loop: EventLoop<()>, window: Window) -> Setup {
+        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let surface = unsafe { instance.create_surface(&window) };
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .expect("error finding adapter");
+
+        let (device, queue) = adapter
+            .request_device(&Default::default(), None)
+            .await
+            .expect("error creating device");
+        Setup {
+            event_loop,
+            window,
+            instance,
+            surface,
+            adapter,
+            device,
+            queue,
+        }
+    }
+}
+
+fn run(
+    Setup {
+        event_loop,
+        window,
+        instance,
+        surface,
+        adapter,
+        device,
+        queue,
+    }: Setup,
+) {
+    let executor = async_executor::LocalExecutor::new();
     let size = window.inner_size();
-    let swapchain_format = adapter.get_swap_chain_preferred_format(&surface).unwrap();
-    let mut sc_desc = wgpu::SwapChainDescriptor {
-        usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
-        format: swapchain_format,
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surface.get_preferred_format(&adapter).unwrap(),
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::Fifo,
     };
-    let mut swap_chain = device.create_swap_chain(&surface, &sc_desc);
+    surface.configure(&device, &config);
 
     // We use a render pipeline just to copy the output buffer of the compute shader to the
     // swapchain. It would be nice if we could skip this, but swapchains with storage usage
     // are not fully portable.
-    let shader_flags = wgpu::ShaderFlags::empty();
     let copy_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("copy.wgsl").into()),
-        flags: shader_flags,
     });
     let copy_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -66,7 +95,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         // Should filterable be false if we want nearest-neighbor?
@@ -77,7 +106,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler {
                         filtering: false,
                         comparison: false,
@@ -102,7 +131,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         fragment: Some(wgpu::FragmentState {
             module: &copy_shader,
             entry_point: "fs_main",
-            targets: &[swapchain_format.into()],
+            targets: &[config.format.into()],
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
@@ -120,7 +149,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsage::STORAGE | wgpu::TextureUsage::SAMPLED,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
     });
     let img_view = img.create_view(&Default::default());
 
@@ -129,7 +158,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let config_dev = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: CONFIG_SIZE,
-        usage: BufferUsage::COPY_DST | BufferUsage::STORAGE,
+        usage: BufferUsages::COPY_DST | BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
     let config_resource = config_dev.as_entire_binding();
@@ -137,7 +166,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("paint.wgsl").into()),
-        flags: shader_flags,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
@@ -186,22 +214,23 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let start_time = std::time::Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
-        // TODO: this may be excessive polling. It really should be synchronized with
-        // swapchain presentation, but that's currently underbaked in wgpu.
-        *control_flow = ControlFlow::Poll;
+        // Make closure own these references. Copied from wgpu, but not clearly needed.
+        let _ = (&instance, &adapter);
         match event {
             Event::RedrawRequested(_) => {
-                let frame = swap_chain
-                    .get_current_frame()
-                    .expect("error getting frame from swap chain")
-                    .output;
+                let frame = surface
+                    .get_current_texture()
+                    .expect("error getting frame from swap chain");
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
 
                 let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
                 let config_data = [size.width, size.height, i_time.to_bits()];
                 let config_host = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
                     contents: bytemuck::bytes_of(&config_data),
-                    usage: BufferUsage::COPY_SRC,
+                    usage: BufferUsages::COPY_SRC,
                 });
                 let mut encoder = device.create_command_encoder(&Default::default());
                 encoder.copy_buffer_to_buffer(&config_host, 0, &config_dev, 0, CONFIG_SIZE);
@@ -215,7 +244,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
                         color_attachments: &[wgpu::RenderPassColorAttachment {
-                            view: &frame.view,
+                            view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
@@ -229,6 +258,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     rpass.draw(0..3, 0..2);
                 }
                 queue.submit(Some(encoder.finish()));
+                frame.present();
+            }
+            Event::RedrawEventsCleared => {
+                executor.try_tick();
             }
             Event::MainEventsCleared => {
                 window.request_redraw();
@@ -245,5 +278,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 fn main() {
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();
-    pollster::block_on(run(event_loop, window));
+    let setup = pollster::block_on(Setup::create(event_loop, window));
+    run(setup);
 }
