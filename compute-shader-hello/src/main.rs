@@ -52,7 +52,7 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
-    let input = bytemuck::bytes_of(&[1.0f32, 2.0f32]);
+    let input = bytemuck::bytes_of(&[1u32, 2u32]);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: input,
@@ -118,7 +118,7 @@ async fn run() {
     println!("post-poll {:?}", std::time::Instant::now());
     if buf_future.await.is_ok() {
         let data = buf_slice.get_mapped_range();
-        let decoded: &[f32] = bytemuck::cast_slice(&*data);
+        let decoded: &[u32] = bytemuck::cast_slice(&*data);
         println!("data: {:?}", decoded);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
