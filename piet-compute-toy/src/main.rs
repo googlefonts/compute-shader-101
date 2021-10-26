@@ -23,7 +23,7 @@
 //! (cd shader && ninja) && cargo run
 //! ```
 
-use piet_gpu_hal::{BufferUsage, Error, Instance, ImageLayout, Session};
+use piet_gpu_hal::{BufferUsage, CmdBuf, Error, ImageLayout, Instance, Session};
 use piet_gpu_hal::include_shader;
 
 use winit::{
@@ -55,6 +55,7 @@ unsafe fn toy() -> Result<(), Error> {
     let config_dev = session.create_buffer(config_size, BufferUsage::COPY_DST | BufferUsage::STORAGE)?;
     let staging_img = session.create_image2d(size.width, size.height)?;
     let start_time = std::time::Instant::now();
+    let mut cmd_bufs: [Option<CmdBuf>; NUM_FRAMES] = Default::default();
 
     let shader_code = include_shader!(&session, "../shader/gen/shader");
     let pipeline = session.pipeline_builder()
@@ -92,7 +93,7 @@ unsafe fn toy() -> Result<(), Error> {
                 ];
                 config_host.write(&config_data).unwrap();
 
-                let mut cmd_buf = session.cmd_buf().unwrap();
+                let mut cmd_buf = cmd_bufs[frame_idx].take().unwrap_or_else(|| session.cmd_buf().unwrap());
                 cmd_buf.begin();
                 cmd_buf.image_barrier(&swap_image, ImageLayout::Undefined, ImageLayout::BlitDst);
                 cmd_buf.copy_buffer(&config_host, &config_dev);
@@ -116,7 +117,7 @@ unsafe fn toy() -> Result<(), Error> {
                 swapchain
                     .present(image_idx, &[&present_semaphores[frame_idx]])
                     .unwrap();
-                submitted.wait().unwrap();
+                cmd_bufs[frame_idx] = submitted.wait().unwrap();
                 current_frame += 1;
             }
             Event::WindowEvent {
