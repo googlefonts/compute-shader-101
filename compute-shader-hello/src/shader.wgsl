@@ -16,14 +16,95 @@
 
 [[block]]
 struct DataBuf {
-    data: [[stride(4)]] array<f32>;
+    data: [[stride(4)]] array<u32>;
+};
+
+[[block]]
+struct StateBuf {
+    state: [[stride(4)]] array<atomic<u32>>;
 };
 
 [[group(0), binding(0)]]
-var<storage, read_write> v_indices: DataBuf;
+var<storage, read_write> main_buf: DataBuf;
 
-[[stage(compute), workgroup_size(1)]]
-fn main([[builtin(global_invocation_id)]] global_id: vec3<u32>) {
-    // TODO: a more interesting computation than this.
-    v_indices.data[global_id.x] = v_indices.data[global_id.x] + 42.0;
+[[group(0), binding(1)]]
+var<storage, read_write> state_buf: StateBuf;
+
+let FLAG_NOT_READY = 0u;
+let FLAG_AGGREGATE_READY = 1u;
+let FLAG_PREFIX_READY = 2u;
+
+let workgroup_size: u32 = 16u;
+
+var<workgroup> part_id: u32;
+var<workgroup> scratch: array<u32, workgroup_size>;
+var<workgroup> shared_prefix: u32;
+
+[[stage(compute), workgroup_size(16)]]
+fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
+    if (local_id.x == 0u) {
+        part_id = atomicAdd(&state_buf.state[0], 1u);
+    }
+    workgroupBarrier();
+    let my_part_id = part_id;
+    let mem_base = my_part_id * workgroup_size;
+    var el = main_buf.data[mem_base + local_id.x];
+    scratch[local_id.x] = el;
+    // This must be lg2(workgroup_size)
+    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        workgroupBarrier();
+        if (local_id.x >= (1u << i)) {
+            el = el + scratch[local_id.x - (1u << i)];
+        }
+        workgroupBarrier();
+        scratch[local_id.x] = el;
+    }
+    var exclusive_prefix = 0u;
+
+    if (local_id.x == workgroup_size - 1u) {
+        var flag = FLAG_AGGREGATE_READY;
+        state_buf.state[my_part_id * 3u + 2u] = el;
+        if (my_part_id == 0u) {
+            state_buf.state[my_part_id * 3u + 3u] = el;
+            flag = FLAG_PREFIX_READY;
+        }
+        // TODO: these storage barriers should probably be in
+        // uniform control flow, but enforcing that is a pain.
+        storageBarrier();
+        state_buf.state[my_part_id * 3u + 1u] = flag;
+
+        if (my_part_id != 0u) {
+            // decoupled look-back
+            var look_back_ix = my_part_id - 1u;
+            loop {
+                flag = state_buf.state[look_back_ix * 3u + 1u];
+                storageBarrier();
+                if (flag == FLAG_PREFIX_READY) {
+                    let their_prefix = state_buf.state[look_back_ix * 3u + 3u];
+                    exclusive_prefix = their_prefix + exclusive_prefix;
+                    break;
+                } elseif (flag == FLAG_AGGREGATE_READY) {
+                    let their_agg = state_buf.state[look_back_ix * 3u + 2u];
+                    exclusive_prefix = their_agg + exclusive_prefix;
+                    look_back_ix = look_back_ix - 1u;
+                }
+                // else spin
+            }
+
+            // compute inclusive prefix
+            let inclusive_prefix = exclusive_prefix + el;
+            shared_prefix = exclusive_prefix;
+            state_buf.state[my_part_id * 3u + 3u] = inclusive_prefix;
+            storageBarrier();
+            state_buf.state[my_part_id * 3u + 1u] = FLAG_PREFIX_READY;
+        }
+    }
+    var prefix = 0u;
+    workgroupBarrier();
+    if (my_part_id != 0u) {
+        prefix = shared_prefix;
+    }
+
+    // do final output
+    main_buf.data[mem_base + local_id.x] = prefix + el;
 }
