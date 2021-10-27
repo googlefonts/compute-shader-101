@@ -7,7 +7,7 @@ edition = "2018"
 resolver = "2"
 
 [dependencies]
-wgpu = "0.11.0"
+wgpu = { version = "0.11.0", features = ["spirv"] }
 env_logger = "0.8"
 pollster = "0.2"
 bytemuck = { version = "1.7", features = ["derive"] }
