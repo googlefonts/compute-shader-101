@@ -19,7 +19,6 @@
 use std::time::Instant;
 
 use rust_gpu_toy_shared::Config;
-use wgpu::util::make_spirv;
 use wgpu::{Extent3d, ShaderModule};
 
 use winit::dpi::PhysicalSize;
@@ -55,8 +54,7 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
 
-    sc_desc: wgpu::SwapChainDescriptor,
-    swap_chain: Option<wgpu::SwapChain>,
+    surface_config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
 
     sampler: wgpu::Sampler,
@@ -70,16 +68,17 @@ struct State {
 impl State {
     async fn new(window: &Window, compilation: CompileResult) -> Self {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
+        let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: Default::default(),
                 compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
             })
             .await
             .expect("error finding adapter");
-        let features = wgpu::Features::PUSH_CONSTANTS;
+        let features = wgpu::Features::PUSH_CONSTANTS  /* | wgpu::Features::SPIRV_SHADER_PASSTHROUGH */;
         let limits = wgpu::Limits {
             max_push_constant_size: std::mem::size_of::<Config>() as u32,
             ..Default::default()
@@ -95,16 +94,18 @@ impl State {
             )
             .await
             .expect("error creating device");
-        let swapchain_format = adapter.get_swap_chain_preferred_format(&surface).unwrap();
-        let sc_desc = wgpu::SwapChainDescriptor {
-            usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
-            format: swapchain_format,
+        let preferred_format = surface
+            .get_preferred_format(&adapter)
+            .expect("Surface is compatible with adapter, as adapter creation succeeded");
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: preferred_format,
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Mailbox,
         };
 
-        let swap_chain = device.create_swap_chain(&surface, &sc_desc);
+        surface.configure(&device, &surface_config);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -116,7 +117,7 @@ impl State {
             ..Default::default()
         });
         let layouts = Self::create_layouts(&device);
-        let pipelines = Self::create_pipelines(&device, &sc_desc, &layouts, &compilation);
+        let pipelines = Self::create_pipelines(&device, &surface_config, &layouts, &compilation);
         let (compute_group, copy_group) = Self::bind_for_size(&device, &sampler, size, &layouts);
         let start_time = Instant::now();
         State {
@@ -125,8 +126,7 @@ impl State {
             surface,
             device,
             queue,
-            sc_desc,
-            swap_chain: Some(swap_chain),
+            surface_config,
             size,
             sampler,
             compute_bind_group: compute_group,
@@ -137,17 +137,15 @@ impl State {
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width != 0 && new_size.height != 0 {
-            self.sc_desc.width = new_size.width;
-            self.sc_desc.height = new_size.height;
+            self.surface_config.width = new_size.width;
+            self.surface_config.height = new_size.height;
             self.size = new_size;
-            let new_swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
-            self.swap_chain = Some(new_swap_chain);
+            self.surface.configure(&self.device, &self.surface_config);
+
             let (compute_bind_group, copy_bind_group) =
                 State::bind_for_size(&self.device, &self.sampler, new_size, &self.layouts);
             self.compute_bind_group = compute_bind_group;
             self.copy_bind_group = copy_bind_group;
-        } else {
-            self.swap_chain = None;
         }
     }
 
@@ -168,7 +166,7 @@ impl State {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsage::STORAGE | wgpu::TextureUsage::SAMPLED,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         });
         let img_view = img.create_view(&Default::default());
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -203,7 +201,7 @@ impl State {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         // Should filterable be false if we want nearest-neighbor?
@@ -214,7 +212,7 @@ impl State {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler {
                         filtering: false,
                         comparison: false,
@@ -232,7 +230,7 @@ impl State {
             label: Some("Compute Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStage::COMPUTE,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,
                     format: wgpu::TextureFormat::Rgba8Unorm,
@@ -246,7 +244,7 @@ impl State {
                 label: None,
                 bind_group_layouts: &[&compute_bg_layout],
                 push_constant_ranges: &[wgpu::PushConstantRange {
-                    stages: wgpu::ShaderStage::COMPUTE,
+                    stages: wgpu::ShaderStages::COMPUTE,
                     range: 0..std::mem::size_of::<Config>() as u32,
                 }],
             });
@@ -259,14 +257,18 @@ impl State {
     }
 
     fn replace_pipelines(&mut self, compilation: &CompileResult) {
-        let new_pipelines =
-            State::create_pipelines(&self.device, &self.sc_desc, &self.layouts, compilation);
+        let new_pipelines = State::create_pipelines(
+            &self.device,
+            &self.surface_config,
+            &self.layouts,
+            compilation,
+        );
         self.pipelines = new_pipelines;
     }
 
     fn create_pipelines(
         device: &wgpu::Device,
-        sc_desc: &wgpu::SwapChainDescriptor,
+        surface_config: &wgpu::SurfaceConfiguration,
         layouts: &Layouts,
         compilation: &CompileResult,
     ) -> Pipelines {
@@ -288,7 +290,7 @@ impl State {
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_main",
-                targets: &[sc_desc.format.into()],
+                targets: &[surface_config.format.into()],
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -301,60 +303,58 @@ impl State {
     }
 
     fn create_shader_module(device: &wgpu::Device, compilation: &CompileResult) -> ShaderModule {
-        let shader_flags = wgpu::ShaderFlags::empty();
         let spirv_path = compilation.module.unwrap_single();
-        let f = std::fs::read(spirv_path).expect("spirv should exist");
-        let shader = make_spirv(&f);
+        let data = std::fs::read(spirv_path).expect("spirv should exist");
+        let source = wgpu::util::make_spirv(&data);
         device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
-            source: shader,
-            flags: shader_flags,
+            source,
         })
     }
 
     fn render_frame(&self) {
-        if let Some(chain) = &self.swap_chain {
-            let frame = chain
-                .get_current_frame()
-                .expect("error getting frame from swap chain")
-                .output;
+        let frame = match self.surface.get_current_texture() {
+            Ok(output) => output,
+            Err(_) => todo!(),
+        };
+        let frame_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let i_time: f32 = 0.5 + self.start_time.elapsed().as_micros() as f32 * 1e-6;
+        let size = self.size;
+        let config = Config {
+            width: size.width,
+            height: size.height,
+            time: i_time,
+        };
 
-            let i_time: f32 = 0.5 + self.start_time.elapsed().as_micros() as f32 * 1e-6;
-            let size = self.size;
-            let config = Config {
-                width: size.width,
-                height: size.height,
-                time: i_time,
-            };
-
-            let mut encoder = self.device.create_command_encoder(&Default::default());
-            {
-                let mut cpass = encoder.begin_compute_pass(&Default::default());
-                cpass.set_pipeline(&self.pipelines.compute_pipeline);
-                cpass.set_push_constants(0, bytemuck::bytes_of(&config));
-                cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-                // Round up to next multiple
-                cpass.dispatch((size.width + 16 - 1) / 16, (size.height + 16 - 1) / 16, 1);
-            }
-            {
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[wgpu::RenderPassColorAttachment {
-                        view: &frame.view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                            store: true,
-                        },
-                    }],
-                    depth_stencil_attachment: None,
-                });
-                rpass.set_pipeline(&self.pipelines.copy_pipeline);
-                rpass.set_bind_group(0, &self.copy_bind_group, &[]);
-                rpass.draw(0..3, 0..2);
-            }
-            self.queue.submit(Some(encoder.finish()));
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            cpass.set_pipeline(&self.pipelines.compute_pipeline);
+            cpass.set_push_constants(0, bytemuck::bytes_of(&config));
+            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+            // Round up to next multiple
+            cpass.dispatch((size.width + 16 - 1) / 16, (size.height + 16 - 1) / 16, 1);
         }
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                        store: true,
+                    },
+                }],
+                depth_stencil_attachment: None,
+            });
+            rpass.set_pipeline(&self.pipelines.copy_pipeline);
+            rpass.set_bind_group(0, &self.copy_bind_group, &[]);
+            rpass.draw(0..3, 0..2);
+        }
+        self.queue.submit(Some(encoder.finish()));
     }
 }
 
@@ -395,9 +395,8 @@ fn main() {
     let event_loop = EventLoop::with_user_event();
     let proxy = event_loop.create_proxy();
     // Watch for changes on a background thread
-    let initial_result = SpirvBuilder::new("./shaders", "spirv-unknown-vulkan1.2")
+    let initial_result = SpirvBuilder::new("./shaders", "spirv-unknown-spv1.5")
         .print_metadata(spirv_builder::MetadataPrintout::None)
-        .capability(spirv_builder::Capability::StorageImageWriteWithoutFormat)
         .watch(move |result| proxy.send_event(result).unwrap())
         .expect("Correctly setup");
 
