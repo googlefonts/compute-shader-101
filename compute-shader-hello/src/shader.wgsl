@@ -40,33 +40,26 @@ var<storage, read_write> control_buf: ControlBuf;
 // should increase the number of failures, as they likely won't
 // be on the same cache line.
 fn permute_flag_ix(data_ix: u32) -> u32 {
-    return (data_ix * 31u) & 0xffffu;
+    return (data_ix * 419u) & 0xffffu;
 }
 
 [[stage(compute), workgroup_size(256)]]
 fn main([[builtin(global_invocation_id)]] global_id: vec3<u32>) {
     let ix = global_id.x;
-    // Originally this was passed in, but is now hardcoded, as D3DCompiler
-    // thinks control flow becomes nonuniform if it's read from input.
-    let n_iter = 1024u;
-    let strategy = control_buf.strategy;
-    var failures = 0u;
-    for (var i: u32 = 0u; i < n_iter; i = i + 1u) {
-        let wr_flag_ix = permute_flag_ix(ix);
-        data_buf.data[ix].data = i + 1u;
-        storageBarrier(); // release semantics for writing flag
-        atomicStore(&data_buf.data[wr_flag_ix].flag, i + 1u);
 
-        // Read from a different workgroup
-        let read_ix = ((ix & 0xffu) << 8u) | (ix >> 8u);
-        let read_flag_ix = permute_flag_ix(read_ix);
+    let wr_flag_ix = permute_flag_ix(ix);
+    data_buf.data[ix].data = 1u;
+    storageBarrier(); // release semantics for writing flag
+    atomicStore(&data_buf.data[wr_flag_ix].flag, 1u);
 
-        let flag = atomicLoad(&data_buf.data[read_flag_ix].flag);
-        storageBarrier(); // acquire semantics for reading flag
-        let data = data_buf.data[read_ix].data;
-        if (flag > data) {
-            failures = failures + 1u;
-        }
+    // Read from a different workgroup
+    let read_ix = (ix * 4099u) & 0xffffu;
+    let read_flag_ix = permute_flag_ix(read_ix);
+
+    let flag = atomicLoad(&data_buf.data[read_flag_ix].flag);
+    storageBarrier(); // acquire semantics for reading flag
+    let data = data_buf.data[read_ix].data;
+    if (flag > data) {
+        let unused = atomicAdd(&control_buf.failures, 1u);
     }
-    let unused = atomicAdd(&control_buf.failures, failures);
 }

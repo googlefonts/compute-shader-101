@@ -16,15 +16,7 @@
 
 //! A simple application to run a compute shader.
 
-use std::time::Instant;
-
-use wgpu::util::DeviceExt;
-
 use bytemuck;
-
-// A strategy of 0 is just atomic loads.
-// A strategy of 1 replaces the flag load with an atomicOr.
-const STRATEGY: u32 = 0;
 
 const USE_SPIRV: bool = false;
 
@@ -57,14 +49,13 @@ async fn run() {
         None
     };
 
-    let start_instant = Instant::now();
     let cs_module = if USE_SPIRV {
         let shader_src: &[u32] = bytemuck::cast_slice(include_bytes!("shader.spv"));
         unsafe {
             device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
                 label: None,
                 source: std::borrow::Cow::Owned(shader_src.into()),
-           })
+            })
         }
     } else {
         device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -72,49 +63,46 @@ async fn run() {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         })
     };
-    
 
-    println!("shader compilation {:?}", start_instant.elapsed());
     let data_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: 0x80000,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let config_buf =  device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let config_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        contents: bytemuck::bytes_of(&[STRATEGY, 0]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_READ,
-    });
-    // This works if the buffer is initialized, otherwise reads all 0, for some reason.
-    let query_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: &[0; 16],
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        size: 8,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: 1,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+        ],
     });
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -143,44 +131,40 @@ async fn run() {
         ],
     });
 
-    let mut encoder = device.create_command_encoder(&Default::default());
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 0);
-    }
-    encoder.clear_buffer(&data_buf, 0, None);
-    {
-        let mut cpass = encoder.begin_compute_pass(&Default::default());
-        cpass.set_pipeline(&pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch(256, 1, 1);
-    }
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 1);
-    }
-    //encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
-    if let Some(query_set) = &query_set {
-        encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
-    }
-    queue.submit(Some(encoder.finish()));
+    let mut failures = 0;
+    for i in 0..1000 {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        if let Some(query_set) = &query_set {
+            encoder.write_timestamp(query_set, 0);
+        }
+        encoder.clear_buffer(&config_buf, 0, None);
+        encoder.clear_buffer(&data_buf, 0, None);
+        {
+            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            cpass.set_pipeline(&pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch(256, 1, 1);
+        }
+        queue.submit(Some(encoder.finish()));
 
-    let buf_slice = config_buf.slice(..);
-    let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
-    let query_slice = query_buf.slice(..);
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read);
-    device.poll(wgpu::Maintain::Wait);
-    if buf_future.await.is_ok() {
-        let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("failures with strategy {}: {}", data[0], data[1]);
+        let buf_slice = config_buf.slice(..);
+        let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
+        device.poll(wgpu::Maintain::Wait);
+        if buf_future.await.is_ok() {
+            let data_raw = buf_slice.get_mapped_range();
+            let data: &[u32] = bytemuck::cast_slice(&*data_raw);
+            if data[1] != 0 {
+                if failures == 0 {
+                    println!("first failing iteration {}, failures: {}", i, data[1]);
+                }
+                failures += data[1];
+            }
+            std::mem::drop(data_raw);
+            config_buf.unmap();
+        }
     }
-    if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-        let ts_period = queue.get_timestamp_period();
-        let ts_data_raw = &*query_slice.get_mapped_range();
-        let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
-        println!(
-            "compute shader elapsed: {:?}ms",
-            (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
-        );
+    if failures != 0 {
+        println!("{} total failures", failures);
     }
 }
 
