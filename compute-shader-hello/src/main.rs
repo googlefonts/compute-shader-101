@@ -49,20 +49,15 @@ async fn run() {
         None
     };
 
-    let cs_module = if USE_SPIRV {
-        let shader_src: &[u32] = bytemuck::cast_slice(include_bytes!("shader.spv"));
-        unsafe {
-            device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
-                label: None,
-                source: std::borrow::Cow::Owned(shader_src.into()),
-            })
-        }
+    let source = if USE_SPIRV {
+        wgpu::util::make_spirv(include_bytes!("shader.spv"))
     } else {
-        device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        })
+        wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into())
     };
+    let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: None,
+        source,
+    });
 
     let data_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
