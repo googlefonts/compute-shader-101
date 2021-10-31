@@ -19,10 +19,9 @@ use spirv_std::{
 #[spirv(compute(threads(16, 16)))]
 pub fn main(
     #[spirv(push_constant)] config: &Config,
-    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] output_buffer: &image::Image!(2D, format=rgba8, sampled=false),
+    #[spirv(descriptor_set = 0, binding = 0, non_readable)] output_buffer: &image::Image!(2D, format=rgba8, sampled=false),
     #[spirv(global_invocation_id)] global_ix: UVec3,
 ) {
-    asm!();
     let frag_coord = global_ix.truncate().as_vec2()
         / vec2(config.width as f32, config.height as f32)
         - vec2(0.5, 0.5);

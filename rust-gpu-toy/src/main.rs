@@ -315,7 +315,19 @@ impl State {
     fn render_frame(&self) {
         let frame = match self.surface.get_current_texture() {
             Ok(output) => output,
-            Err(_) => todo!(),
+            Err(err) => {
+                eprintln!("get_current_texture error: {:?}", err);
+                match err {
+                    wgpu::SurfaceError::Lost => {
+                        self.surface.configure(&self.device, &self.surface_config);
+                    }
+                    wgpu::SurfaceError::OutOfMemory => {
+                        panic!();
+                    }
+                    _ => (),
+                }
+                return;
+            }
         };
         let frame_view = frame
             .texture
@@ -355,6 +367,7 @@ impl State {
             rpass.draw(0..3, 0..2);
         }
         self.queue.submit(Some(encoder.finish()));
+        frame.present();
     }
 }
 
