@@ -78,7 +78,7 @@ impl State {
             })
             .await
             .expect("error finding adapter");
-        let features = wgpu::Features::PUSH_CONSTANTS  /* | wgpu::Features::SPIRV_SHADER_PASSTHROUGH */;
+        let features = wgpu::Features::PUSH_CONSTANTS;
         let limits = wgpu::Limits {
             max_push_constant_size: std::mem::size_of::<Config>() as u32,
             ..Default::default()
