@@ -10,5 +10,7 @@ edition = "2018"
 crate-type = ["dylib"]
 
 [dependencies]
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "e66e72b049a88f3ae1f7c54cd6823ae458612952", features = ["glam", "const-generics"] }
+spirv-std = { git = "https://github.com/DJMcNab/rust-gpu", rev = "c5bb9ebcf90a6bef3d9f11f79d3d33414f36091f", features = [
+    "glam",
+] }
 rust-gpu-toy-shared = { path = "../shared" }

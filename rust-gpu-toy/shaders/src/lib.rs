@@ -19,10 +19,10 @@ use spirv_std::{
 #[spirv(compute(threads(16, 16)))]
 pub fn main(
     #[spirv(push_constant)] config: &Config,
-    #[spirv(descriptor_set = 0, binding = 0)] output_buffer: &image::StorageImage2d,
+    #[spirv(descriptor_set = 0, binding = 0, non_readable)] output_buffer: &image::Image!(2D, format=rgba8, sampled=false),
     #[spirv(global_invocation_id)] global_ix: UVec3,
 ) {
-    let frag_coord = global_ix.truncate().as_f32()
+    let frag_coord = global_ix.truncate().as_vec2()
         / vec2(config.width as f32, config.height as f32)
         - vec2(0.5, 0.5);
 
@@ -38,7 +38,7 @@ pub fn main(
     // A better choice might be to just enable the int8 capability
     if global_ix.x < config.width {
         if global_ix.y < config.height {
-            unsafe { output_buffer.write(global_ix.truncate(), frag_color) }
+            unsafe { output_buffer.write(global_ix.truncate().as_ivec2(), frag_color) }
         }
     }
 }
