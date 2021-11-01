@@ -3,8 +3,7 @@ name = "compute-shader-hello"
 version = "0.1.0"
 authors = ["Raph Levien <raph@google.com>"]
 license = "MIT/Apache-2.0"
-edition = "2018"
-resolver = "2"
+edition = "2021"
 
 [dependencies]
 wgpu = "0.11.0"
