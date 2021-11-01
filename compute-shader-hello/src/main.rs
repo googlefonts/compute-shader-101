@@ -22,8 +22,13 @@ use wgpu::util::DeviceExt;
 
 use bytemuck;
 
-const N_DATA: usize = 16384;
+const N_DATA: usize = 1024;
 const WG_SIZE: usize = 16;
+
+// Verify that the data is OEIS A000217
+fn verify(data: &[u32]) -> bool {
+    data.iter().enumerate().all(|(i, val)| (i * (i + 1)) / 2 == *val as usize)
+}
 
 async fn run() {
     let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
@@ -141,7 +146,7 @@ async fn run() {
     if buf_future.await.is_ok() {
         let data_raw = &*buf_slice.get_mapped_range();
         let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("data: {:?}", &*data);
+        println!("results correct: {}", verify(data));
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();
