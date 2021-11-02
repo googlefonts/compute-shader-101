@@ -22,12 +22,18 @@ use wgpu::util::DeviceExt;
 
 use bytemuck;
 
-const N_DATA: usize = 65536;
-const WG_SIZE: usize = 1024;
+const N_DATA: usize = 1 << 20;
+const WG_SIZE: usize = 1 << 10;
 
 // Verify that the data is OEIS A000217
-fn verify(data: &[u32]) -> bool {
-    data.iter().enumerate().all(|(i, val)| (i * (i + 1)) / 2 == *val as usize)
+fn verify(data: &[u32]) -> Option<usize> {
+    data.iter().enumerate().position(|(i, val)| {
+        let wrong = ((i * (i + 1)) / 2) as u32 != *val;
+        if wrong {
+            println!("diff @ {}: {} != {}", i, ((i * (i + 1)) / 2) as u32, *val);
+        }
+        wrong
+    })
 }
 
 async fn run() {
@@ -68,7 +74,6 @@ async fn run() {
         label: None,
         contents: input,
         usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
     });
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -146,7 +151,7 @@ async fn run() {
     if buf_future.await.is_ok() {
         let data_raw = &*buf_slice.get_mapped_range();
         let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("results correct: {}", verify(data));
+        println!("results correct: {:?}", verify(data));
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();

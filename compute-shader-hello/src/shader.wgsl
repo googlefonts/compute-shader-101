@@ -34,14 +34,15 @@ let FLAG_NOT_READY = 0u;
 let FLAG_AGGREGATE_READY = 1u;
 let FLAG_PREFIX_READY = 2u;
 
-let workgroup_size: u32 = 1024u;
+let workgroup_size: u32 = 256u;
+let N_SEQ = 4u;
 
 var<workgroup> part_id: u32;
 var<workgroup> scratch: array<u32, workgroup_size>;
 var<workgroup> shared_prefix: u32;
 var<workgroup> shared_flag: u32;
 
-[[stage(compute), workgroup_size(1024)]]
+[[stage(compute), workgroup_size(256)]]
 fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     if (local_id.x == 0u) {
         part_id = atomicAdd(&state_buf.state[0], 1u);
@@ -49,10 +50,16 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     workgroupBarrier();
     let my_part_id = part_id;
     let mem_base = my_part_id * workgroup_size;
-    var el = main_buf.data[mem_base + local_id.x];
+    var local: array<u32, N_SEQ>;
+    var el = main_buf.data[(mem_base + local_id.x) * N_SEQ];
+    local[0] = el;
+    for (var i: u32 = 1u; i < N_SEQ; i = i + 1u) {
+        el = el + main_buf.data[(mem_base + local_id.x) * N_SEQ + i];
+        local[i] = el;
+    }
     scratch[local_id.x] = el;
     // This must be lg2(workgroup_size)
-    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+    for (var i: u32 = 0u; i < 8u; i = i + 1u) {
         workgroupBarrier();
         if (local_id.x >= (1u << i)) {
             el = el + scratch[local_id.x - (1u << i)];
@@ -120,5 +127,11 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     }
 
     // do final output
-    main_buf.data[mem_base + local_id.x] = prefix + el;
+    for (var i: u32 = 0u; i < N_SEQ; i = i + 1u) {
+        var old = 0u;
+        if (local_id.x > 0u) {
+            old = scratch[local_id.x - 1u];
+        }
+        main_buf.data[(mem_base + local_id.x) * N_SEQ + i] = prefix + old + local[i];
+    }
 }
