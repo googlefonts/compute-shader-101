@@ -34,14 +34,14 @@ let FLAG_NOT_READY = 0u;
 let FLAG_AGGREGATE_READY = 1u;
 let FLAG_PREFIX_READY = 2u;
 
-let workgroup_size: u32 = 16u;
+let workgroup_size: u32 = 1024u;
 
 var<workgroup> part_id: u32;
 var<workgroup> scratch: array<u32, workgroup_size>;
 var<workgroup> shared_prefix: u32;
 var<workgroup> shared_flag: u32;
 
-[[stage(compute), workgroup_size(16)]]
+[[stage(compute), workgroup_size(1024)]]
 fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     if (local_id.x == 0u) {
         part_id = atomicAdd(&state_buf.state[0], 1u);
@@ -52,7 +52,7 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     var el = main_buf.data[mem_base + local_id.x];
     scratch[local_id.x] = el;
     // This must be lg2(workgroup_size)
-    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
         workgroupBarrier();
         if (local_id.x >= (1u << i)) {
             el = el + scratch[local_id.x - (1u << i)];
@@ -81,20 +81,20 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
         var look_back_ix = my_part_id - 1u;
         loop {
             if (local_id.x == workgroup_size - 1u) {
-                shared_flag = state_buf.state[look_back_ix * 3u + 1u];
+                shared_flag = atomicOr(&state_buf.state[look_back_ix * 3u + 1u], 0u);
             }
             workgroupBarrier();
             flag = shared_flag;
             storageBarrier();
             if (flag == FLAG_PREFIX_READY) {
                 if (local_id.x == workgroup_size - 1u) {
-                    let their_prefix = state_buf.state[look_back_ix * 3u + 3u];
+                    let their_prefix = atomicOr(&state_buf.state[look_back_ix * 3u + 3u], 0u);
                     exclusive_prefix = their_prefix + exclusive_prefix;
                 }
                 break;
             } elseif (flag == FLAG_AGGREGATE_READY) {
                 if (local_id.x == workgroup_size - 1u) {
-                    let their_agg = state_buf.state[look_back_ix * 3u + 2u];
+                    let their_agg = atomicOr(&state_buf.state[look_back_ix * 3u + 2u], 0u);
                     exclusive_prefix = their_agg + exclusive_prefix;
                 }
                 look_back_ix = look_back_ix - 1u;

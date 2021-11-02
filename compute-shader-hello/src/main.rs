@@ -22,8 +22,8 @@ use wgpu::util::DeviceExt;
 
 use bytemuck;
 
-const N_DATA: usize = 1024;
-const WG_SIZE: usize = 16;
+const N_DATA: usize = 65536;
+const WG_SIZE: usize = 1024;
 
 // Verify that the data is OEIS A000217
 fn verify(data: &[u32]) -> bool {
