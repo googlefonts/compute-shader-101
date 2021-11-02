@@ -22,7 +22,7 @@ use wgpu::util::DeviceExt;
 
 use bytemuck;
 
-const N_DATA: usize = 1 << 20;
+const N_DATA: usize = 1 << 25;
 const WG_SIZE: usize = 1 << 10;
 
 // Verify that the data is OEIS A000217
@@ -121,46 +121,50 @@ async fn run() {
         ],
     });
 
-    let mut encoder = device.create_command_encoder(&Default::default());
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 0);
-    }
-    encoder.clear_buffer(&state_buf, 0, None);
-    {
-        let mut cpass = encoder.begin_compute_pass(&Default::default());
-        cpass.set_pipeline(&pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch(N_WG as u32, 1, 1);
-    }
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 1);
-    }
-    encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
-    if let Some(query_set) = &query_set {
-        encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
-    }
-    queue.submit(Some(encoder.finish()));
+    for i in 0..10 {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        if let Some(query_set) = &query_set {
+            encoder.write_timestamp(query_set, 0);
+        }
+        encoder.clear_buffer(&state_buf, 0, None);
+        {
+            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            cpass.set_pipeline(&pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch(N_WG as u32, 1, 1);
+        }
+        if let Some(query_set) = &query_set {
+            encoder.write_timestamp(query_set, 1);
+        }
+        encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
+        if let Some(query_set) = &query_set {
+            encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
+        }
+        queue.submit(Some(encoder.finish()));
 
-    let buf_slice = output_buf.slice(..);
-    let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
-    let query_slice = query_buf.slice(..);
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read);
-    println!("pre-poll {:?}", std::time::Instant::now());
-    device.poll(wgpu::Maintain::Wait);
-    println!("post-poll {:?}", std::time::Instant::now());
-    if buf_future.await.is_ok() {
-        let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("results correct: {:?}", verify(data));
-    }
-    if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-        let ts_period = queue.get_timestamp_period();
-        let ts_data_raw = &*query_slice.get_mapped_range();
-        let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
-        println!(
-            "compute shader elapsed: {:?}ms",
-            (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
-        );
+        let buf_slice = output_buf.slice(..);
+        let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
+        let query_slice = query_buf.slice(..);
+        let _query_future = query_slice.map_async(wgpu::MapMode::Read);
+        device.poll(wgpu::Maintain::Wait);
+        if buf_future.await.is_ok() {
+            let data_raw = &*buf_slice.get_mapped_range();
+            let data: &[u32] = bytemuck::cast_slice(data_raw);
+            if i == 0 {
+                println!("results correct: {:?}", verify(data));
+            }
+        }
+        if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            let ts_period = queue.get_timestamp_period();
+            let ts_data_raw = &*query_slice.get_mapped_range();
+            let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
+            println!(
+                "compute shader elapsed: {:?}ms",
+                (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
+            );
+        }
+        output_buf.unmap();
+        query_buf.unmap();
     }
 }
 
