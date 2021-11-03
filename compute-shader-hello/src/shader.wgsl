@@ -15,7 +15,7 @@
 // Also licensed under MIT license, at your choice.
 
 struct Element {
-    data: u32;
+    data: atomic<u32>;
     flag: atomic<u32>;
 };
 
@@ -48,7 +48,7 @@ fn main([[builtin(global_invocation_id)]] global_id: vec3<u32>) {
     let ix = global_id.x;
 
     let wr_flag_ix = permute_flag_ix(ix);
-    data_buf.data[ix].data = 1u;
+    atomicStore(&data_buf.data[ix].data, 1u);
     storageBarrier(); // release semantics for writing flag
     atomicStore(&data_buf.data[wr_flag_ix].flag, 1u);
 
@@ -58,7 +58,7 @@ fn main([[builtin(global_invocation_id)]] global_id: vec3<u32>) {
 
     let flag = atomicLoad(&data_buf.data[read_flag_ix].flag);
     storageBarrier(); // acquire semantics for reading flag
-    let data = data_buf.data[read_ix].data;
+    let data = atomicLoad(&data_buf.data[read_ix].data);
     if (flag > data) {
         let unused = atomicAdd(&control_buf.failures, 1u);
     }
