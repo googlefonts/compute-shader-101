@@ -34,15 +34,15 @@ let FLAG_NOT_READY = 0u;
 let FLAG_AGGREGATE_READY = 1u;
 let FLAG_PREFIX_READY = 2u;
 
-let workgroup_size: u32 = 256u;
-let N_SEQ = 4u;
+let workgroup_size: u32 = 512u;
+let N_SEQ = 8u;
 
 var<workgroup> part_id: u32;
 var<workgroup> scratch: array<u32, workgroup_size>;
 var<workgroup> shared_prefix: u32;
 var<workgroup> shared_flag: u32;
 
-[[stage(compute), workgroup_size(256)]]
+[[stage(compute), workgroup_size(512)]]
 fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     if (local_id.x == 0u) {
         part_id = atomicAdd(&state_buf.state[0], 1u);
@@ -59,7 +59,7 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
     }
     scratch[local_id.x] = el;
     // This must be lg2(workgroup_size)
-    for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    for (var i: u32 = 0u; i < 9u; i = i + 1u) {
         workgroupBarrier();
         if (local_id.x >= (1u << i)) {
             el = el + scratch[local_id.x - (1u << i)];

@@ -23,7 +23,7 @@ use wgpu::util::DeviceExt;
 use bytemuck;
 
 const N_DATA: usize = 1 << 25;
-const WG_SIZE: usize = 1 << 10;
+const WG_SIZE: usize = 1 << 12;
 
 // Verify that the data is OEIS A000217
 fn verify(data: &[u32]) -> Option<usize> {
@@ -121,7 +121,7 @@ async fn run() {
         ],
     });
 
-    for i in 0..10 {
+    for i in 0..100 {
         let mut encoder = device.create_command_encoder(&Default::default());
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 0);
@@ -136,7 +136,9 @@ async fn run() {
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 1);
         }
-        encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
+        if i == 0 {
+            encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
+        }
         if let Some(query_set) = &query_set {
             encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
         }
@@ -145,25 +147,27 @@ async fn run() {
         let buf_slice = output_buf.slice(..);
         let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
         let query_slice = query_buf.slice(..);
-        let _query_future = query_slice.map_async(wgpu::MapMode::Read);
+        let query_future = query_slice.map_async(wgpu::MapMode::Read);
         device.poll(wgpu::Maintain::Wait);
         if buf_future.await.is_ok() {
-            let data_raw = &*buf_slice.get_mapped_range();
-            let data: &[u32] = bytemuck::cast_slice(data_raw);
             if i == 0 {
+                let data_raw = &*buf_slice.get_mapped_range();
+                let data: &[u32] = bytemuck::cast_slice(data_raw);
                 println!("results correct: {:?}", verify(data));
             }
+            output_buf.unmap();
         }
-        if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-            let ts_period = queue.get_timestamp_period();
-            let ts_data_raw = &*query_slice.get_mapped_range();
-            let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
-            println!(
-                "compute shader elapsed: {:?}ms",
-                (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
-            );
+        if query_future.await.is_ok() {
+            if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+                let ts_period = queue.get_timestamp_period();
+                let ts_data_raw = &*query_slice.get_mapped_range();
+                let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
+                println!(
+                    "compute shader elapsed: {:?}ms",
+                    (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
+                );
+            }
         }
-        output_buf.unmap();
         query_buf.unmap();
     }
 }
