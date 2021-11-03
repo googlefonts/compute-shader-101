@@ -14,16 +14,52 @@
 //
 // Also licensed under MIT license, at your choice.
 
+struct Element {
+    data: atomic<u32>;
+    flag: atomic<u32>;
+};
+
 [[block]]
 struct DataBuf {
-    data: [[stride(4)]] array<f32>;
+    data: [[stride(8)]] array<Element>;
+};
+
+[[block]]
+struct ControlBuf {
+    strategy: u32;
+    failures: atomic<u32>;
 };
 
 [[group(0), binding(0)]]
-var<storage, read_write> v_indices: DataBuf;
+var<storage, read_write> data_buf: DataBuf;
 
-[[stage(compute), workgroup_size(1)]]
+[[group(0), binding(1)]]
+var<storage, read_write> control_buf: ControlBuf;
+
+// Put the flag in quite a different place than the data, which
+// should increase the number of failures, as they likely won't
+// be on the same cache line.
+fn permute_flag_ix(data_ix: u32) -> u32 {
+    return (data_ix * 419u) & 0xffffu;
+}
+
+[[stage(compute), workgroup_size(256)]]
 fn main([[builtin(global_invocation_id)]] global_id: vec3<u32>) {
-    // TODO: a more interesting computation than this.
-    v_indices.data[global_id.x] = v_indices.data[global_id.x] + 42.0;
+    let ix = global_id.x;
+
+    let wr_flag_ix = permute_flag_ix(ix);
+    atomicStore(&data_buf.data[ix].data, 1u);
+    storageBarrier(); // release semantics for writing flag
+    atomicStore(&data_buf.data[wr_flag_ix].flag, 1u);
+
+    // Read from a different workgroup
+    let read_ix = (ix * 4099u) & 0xffffu;
+    let read_flag_ix = permute_flag_ix(read_ix);
+
+    let flag = atomicLoad(&data_buf.data[read_flag_ix].flag);
+    storageBarrier(); // acquire semantics for reading flag
+    let data = atomicLoad(&data_buf.data[read_ix].data);
+    if (flag > data) {
+        let unused = atomicAdd(&control_buf.failures, 1u);
+    }
 }
