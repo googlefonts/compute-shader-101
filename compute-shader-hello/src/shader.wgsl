@@ -71,16 +71,16 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
 
     var flag = FLAG_AGGREGATE_READY;
     if (local_id.x == workgroup_size - 1u) {
-        state_buf.state[my_part_id * 3u + 2u] = el;
+        atomicStore(&state_buf.state[my_part_id * 3u + 2u], el);
         if (my_part_id == 0u) {
-            state_buf.state[my_part_id * 3u + 3u] = el;
+            atomicStore(&state_buf.state[my_part_id * 3u + 3u], el);
             flag = FLAG_PREFIX_READY;
         }
     }
     // make sure these barriers are in uniform control flow
     storageBarrier();
     if (local_id.x == workgroup_size - 1u) {
-        state_buf.state[my_part_id * 3u + 1u] = flag;
+        atomicStore(&state_buf.state[my_part_id * 3u + 1u], flag);
     }
 
     if (my_part_id != 0u) {
@@ -113,11 +113,11 @@ fn main([[builtin(local_invocation_id)]] local_id: vec3<u32>) {
         if (local_id.x == workgroup_size - 1u) {
             let inclusive_prefix = exclusive_prefix + el;
             shared_prefix = exclusive_prefix;
-            state_buf.state[my_part_id * 3u + 3u] = inclusive_prefix;
+            atomicStore(&state_buf.state[my_part_id * 3u + 3u], inclusive_prefix);
         }
         storageBarrier();
         if (local_id.x == workgroup_size - 1u) {
-            state_buf.state[my_part_id * 3u + 1u] = FLAG_PREFIX_READY;
+            atomicStore(&state_buf.state[my_part_id * 3u + 1u], FLAG_PREFIX_READY);
         }
     }
     var prefix = 0u;
