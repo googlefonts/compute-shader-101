@@ -17,7 +17,7 @@
 //! A simple compute shader example that draws into a window, based on wgpu.
 
 use wgpu::util::DeviceExt;
-use wgpu::{BufferUsages, Extent3d};
+use wgpu::{BufferUsages, Extent3d, SamplerBindingType};
 
 use winit::{
     event::{Event, WindowEvent},
@@ -42,20 +42,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("error creating device");
     let size = window.inner_size();
-    let format = surface.get_preferred_format(&adapter).unwrap();
+    let format = surface.get_supported_formats(&adapter)[0];
     let sc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: format,
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::Fifo,
     };
     surface.configure(&device, &sc);
 
     // We use a render pipeline just to copy the output buffer of the compute shader to the
     // swapchain. It would be nice if we could skip this, but swapchains with storage usage
     // are not fully portable.
-    let copy_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let copy_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("copy.wgsl").into()),
     });
@@ -77,10 +77,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        filtering: false,
-                        comparison: false,
-                    },
+                    ty: wgpu::BindingType::Sampler(SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
@@ -101,11 +98,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         fragment: Some(wgpu::FragmentState {
             module: &copy_shader,
             entry_point: "fs_main",
-            targets: &[format.into()],
+            targets: &[Some(format.into())],
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
+        multiview: None,
     });
 
     let img = device.create_texture(&wgpu::TextureDescriptor {
@@ -133,7 +131,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
     let config_resource = config_dev.as_entire_binding();
 
-    let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(include_str!("paint.wgsl").into()),
     });
@@ -235,20 +233,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     let mut cpass = encoder.begin_compute_pass(&Default::default());
                     cpass.set_pipeline(&pipeline);
                     cpass.set_bind_group(0, &bind_group, &[]);
-                    cpass.dispatch(size.width / 16, size.height / 16, 1);
+                    cpass.dispatch_workgroups(size.width / 16, size.height / 16, 1);
                 }
                 {
-                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let view = frame
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
-                        color_attachments: &[wgpu::RenderPassColorAttachment {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
                                 store: true,
                             },
-                        }],
+                        })],
                         depth_stencil_attachment: None,
                     });
                     rpass.set_pipeline(&render_pipeline);

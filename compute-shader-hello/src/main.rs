@@ -48,7 +48,7 @@ async fn run() {
     };
 
     let start_instant = Instant::now();
-    let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         //source: wgpu::ShaderSource::SpirV(bytes_to_u32(include_bytes!("alu.spv")).into()),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -120,7 +120,7 @@ async fn run() {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch(input_f.len() as u32, 1, 1);
+        cpass.dispatch_workgroups(input_f.len() as u32, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
@@ -132,23 +132,26 @@ async fn run() {
     queue.submit(Some(encoder.finish()));
 
     let buf_slice = output_buf.slice(..);
-    let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
-    let query_slice = query_buf.slice(..);
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read);
+    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    //let query_slice = query_buf.slice(..);
+    //let _query_future = query_slice.map_async(wgpu::MapMode::Read);
     println!("pre-poll {:?}", std::time::Instant::now());
     device.poll(wgpu::Maintain::Wait);
     println!("post-poll {:?}", std::time::Instant::now());
-    if buf_future.await.is_ok() {
+    if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
         let data : &[f32] = bytemuck::cast_slice(data_raw);
         println!("data: {:?}", &*data);
     }
+    /*
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();
         let ts_data_raw = &*query_slice.get_mapped_range();
         let ts_data : &[u64] = bytemuck::cast_slice(ts_data_raw);
         println!("compute shader elapsed: {:?}ms", (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6);
     }
+    */
 }
 
 fn main() {
