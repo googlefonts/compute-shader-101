@@ -1,0 +1,3 @@
+[workspace]
+members = ["compute-shader-hello", "compute-shader-toy", "piet-compute-toy"]
+resolver = "2"
