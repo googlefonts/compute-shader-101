@@ -48,14 +48,14 @@ async fn run() {
     };
 
     let start_instant = Instant::now();
-    let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         //source: wgpu::ShaderSource::SpirV(bytes_to_u32(include_bytes!("alu.spv")).into()),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
     let input_f = &[1.0f32, 2.0f32];
-    let input : &[u8] = bytemuck::bytes_of(input_f);
+    let input: &[u8] = bytemuck::bytes_of(input_f);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: input,
@@ -78,18 +78,16 @@ async fn run() {
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
-        ],
+            count: None,
+        }],
     });
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -120,7 +118,7 @@ async fn run() {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch(input_f.len() as u32, 1, 1);
+        cpass.dispatch_workgroups(input_f.len() as u32, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
@@ -132,22 +130,28 @@ async fn run() {
     queue.submit(Some(encoder.finish()));
 
     let buf_slice = output_buf.slice(..);
-    let buf_future = buf_slice.map_async(wgpu::MapMode::Read);
+    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let query_slice = query_buf.slice(..);
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read);
+    // Assume that both buffers become available at the same time. A more careful
+    // approach would be to wait for both notifications to be sent.
+    let _query_future = query_slice.map_async(wgpu::MapMode::Read, |_| ());
     println!("pre-poll {:?}", std::time::Instant::now());
     device.poll(wgpu::Maintain::Wait);
     println!("post-poll {:?}", std::time::Instant::now());
-    if buf_future.await.is_ok() {
+    if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
-        let data : &[f32] = bytemuck::cast_slice(data_raw);
+        let data: &[f32] = bytemuck::cast_slice(data_raw);
         println!("data: {:?}", &*data);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();
         let ts_data_raw = &*query_slice.get_mapped_range();
-        let ts_data : &[u64] = bytemuck::cast_slice(ts_data_raw);
-        println!("compute shader elapsed: {:?}ms", (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6);
+        let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
+        println!(
+            "compute shader elapsed: {:?}ms",
+            (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
+        );
     }
 }
 

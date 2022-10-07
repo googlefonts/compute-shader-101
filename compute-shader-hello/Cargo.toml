@@ -6,7 +6,8 @@ license = "MIT/Apache-2.0"
 edition = "2021"
 
 [dependencies]
-wgpu = "0.11.0"
-env_logger = "0.8"
-pollster = "0.2"
-bytemuck = { version = "1.7", features = ["derive"] }
+wgpu = "0.14"
+env_logger = "0.9.1"
+pollster = "0.2.5"
+futures-intrusive = "0.4"
+bytemuck = { version = "1.12.1", features = ["derive"] }

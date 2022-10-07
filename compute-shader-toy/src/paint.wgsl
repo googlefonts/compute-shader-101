@@ -14,18 +14,17 @@
 //
 // Also licensed under MIT license, at your choice.
 
-[[block]]
 struct Params {
-    width: u32;
-    height: u32;
-    iTime: f32;
+    width: u32,
+    height: u32,
+    iTime: f32,
 };
 
-[[group(0), binding(0)]] var<uniform> params: Params;
-[[group(0), binding(1)]] var outputTex: texture_storage_2d<rgba8unorm,write>;
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var outputTex: texture_storage_2d<rgba8unorm, write>;
 
-[[stage(compute), workgroup_size(16, 16)]]
-fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) global_ix: vec3<u32>) {
     let fragCoord: vec2<f32> = vec2<f32>(global_ix.xy) / vec2<f32>(f32(params.width), f32(params.height))
         - vec2<f32>(0.5, 0.5);
 
