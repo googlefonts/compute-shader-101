@@ -23,8 +23,8 @@
 //! (cd shader && ninja) && cargo run
 //! ```
 
-use piet_gpu_hal::{BufferUsage, Error, Instance, ImageLayout, Session};
 use piet_gpu_hal::include_shader;
+use piet_gpu_hal::{BufferUsage, Error, ImageLayout, Instance, Session};
 
 use winit::{
     event::{Event, WindowEvent},
@@ -51,18 +51,22 @@ unsafe fn toy() -> Result<(), Error> {
     let mut swapchain = instance.swapchain(size.width as _, size.height as _, &device, &surface)?;
     let session = Session::new(device);
     let config_size = 12;
-    let mut config_host = session.create_buffer(config_size, BufferUsage::COPY_SRC | BufferUsage::MAP_WRITE)?;
-    let config_dev = session.create_buffer(config_size, BufferUsage::COPY_DST | BufferUsage::STORAGE)?;
+    let mut config_host =
+        session.create_buffer(config_size, BufferUsage::COPY_SRC | BufferUsage::MAP_WRITE)?;
+    let config_dev =
+        session.create_buffer(config_size, BufferUsage::COPY_DST | BufferUsage::STORAGE)?;
     let staging_img = session.create_image2d(size.width, size.height)?;
     let start_time = std::time::Instant::now();
 
     let shader_code = include_shader!(&session, "../shader/gen/shader");
-    let pipeline = session.pipeline_builder()
+    let pipeline = session
+        .pipeline_builder()
         .add_buffers(1)
         .add_images(1)
         .create_compute_pipeline(&session, shader_code)?;
 
-    let descriptor_set = session.descriptor_set_builder()
+    let descriptor_set = session
+        .descriptor_set_builder()
         .add_buffers(&[&config_dev])
         .add_images(&[&staging_img])
         .build(&session, &pipeline)?;
@@ -85,11 +89,7 @@ unsafe fn toy() -> Result<(), Error> {
                 let swap_image = swapchain.image(image_idx);
 
                 let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
-                let config_data = [
-                    size.width,
-                    size.height,
-                    i_time.to_bits(),
-                ];
+                let config_data = [size.width, size.height, i_time.to_bits()];
                 config_host.write(&config_data).unwrap();
 
                 let mut cmd_buf = session.cmd_buf().unwrap();
