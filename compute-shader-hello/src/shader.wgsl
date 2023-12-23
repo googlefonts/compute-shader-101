@@ -18,6 +18,7 @@ struct Config {
     num_keys: u32,
     num_blocks_per_wg: u32,
     num_wgs: u32,
+    num_wgs_with_additional_blocks: u32,
     shift: u32,
 }
 
@@ -30,16 +31,19 @@ var<storage> src: array<u32>;
 @group(0) @binding(2)
 var<storage, read_write> counts: array<u32>;
 
+@group(0) @binding(3)
+var<storage, read_write> out: array<u32>;
+
 const OFFSET = 42u;
 
 const WG = 256u;
 const BITS_PER_PASS = 4u;
 const BIN_COUNT = 1u << BITS_PER_PASS;
-const HISTOGRAM_SIZE = WG * BIN_COUNT;
+const BLOCK_SIZE = WG * BIN_COUNT;
 const ELEMENTS_PER_THREAD = 1u; // 4 in source
 const NUM_REDUCE_WG_PER_BIN = 1u; // config?
 
-var<workgroup> histogram: array<u32, HISTOGRAM_SIZE>;
+var<workgroup> histogram: array<u32, BLOCK_SIZE>;
 
 @compute
 @workgroup_size(WG)
@@ -51,9 +55,13 @@ fn count(
         histogram[i * WG + local_id.x] = 0u;
     }
     workgroupBarrier();
-    let num_blocks = config.num_blocks_per_wg;
-    let wg_block_start = HISTOGRAM_SIZE * num_blocks * wg_id.x;
-    // TODO: handle additional blocks
+    var num_blocks = config.num_blocks_per_wg;
+    var wg_block_start = BLOCK_SIZE * num_blocks * wg_id.x;
+    let num_not_additional = config.num_wgs - config.num_wgs_with_additional_blocks;
+    if wg_id.x >= num_not_additional {
+        wg_block_start += (wg_id.x - num_not_additional) * BLOCK_SIZE;
+        num_blocks += 1u;
+    }
     var block_index = wg_block_start + local_id.x;
     let block_size = 1024u;
     let shift_bit = config.shift;
@@ -165,7 +173,98 @@ fn scan_add (
 
 var<workgroup> bin_offset_cache: array<u32, WG>;
 
-var<workgroup> local_histogram: array<u32, BIN_COUNT>;
+var<workgroup> local_histogram: array<atomic<u32>, BIN_COUNT>;
 
-var<workgroup> lds_scratch: array<u32, WG>;
-
+@compute
+@workgroup_size(WG)
+fn scatter (
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    if local_id.x < BIN_COUNT {
+        bin_offset_cache[local_id.x] = sums[local_id.x * config.num_wgs + wg_id.x];
+    }
+    workgroupBarrier();
+    let wg_block_start = BLOCK_SIZE * config.num_blocks_per_wg * wg_id.x;
+    let num_blocks = config.num_blocks_per_wg;
+    // TODO: handle additional as above
+    let block_index = wg_block_start + local_id.x;
+    for (var block_count = 0u; block_count < num_blocks; block_count++) {
+        var data_index = block_index;
+        for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+            if local_id.x < BIN_COUNT {
+                local_histogram[local_id.x] = 0u;
+            }
+            var local_key = ~0u;
+            if data_index < config.num_keys {
+                local_key = src[data_index + i];
+            }
+            for (var bit_shift = 0u; bit_shift < BITS_PER_PASS; bit_shift += 2u) {
+                let key_index = (local_key >> config.shift) & 0xfu;
+                let bit_key = (key_index >> bit_shift) & 3u;
+                var packed_histogram = 1u << (bit_key * 8u);
+                // workgroup prefix sum
+                var sum = packed_histogram;
+                sums[local_id.x] = sum;
+                for (var i = 0u; i < 8u; i++) {
+                    workgroupBarrier();
+                    if local_id.x >= (1u << i) {
+                        sum += sums[local_id.x - (1u << i)];
+                    }
+                    workgroupBarrier();
+                    sums[local_id.x] = sum;
+                }
+                workgroupBarrier();
+                packed_histogram = sums[WG - 1u];
+                packed_histogram = (packed_histogram << 8u) + (packed_histogram << 16u) + (packed_histogram << 24u);
+                var local_sum = packed_histogram;
+                if local_id.x > 0u {
+                    local_sum += sums[local_id.x - 1u];
+                }
+                let key_offset = (local_sum >> (bit_key * 8u)) & 0xffu;
+                sums[key_offset] = local_key;
+                workgroupBarrier();
+                local_key = sums[local_id.x];
+                // TODO: handle value here (if we had it)
+                workgroupBarrier();
+            }
+            let key_index = (local_key >> config.shift) & 0xfu;
+            atomicAdd(&local_histogram[key_index], 1u);
+            workgroupBarrier();
+            var histogram_local_sum = 0u;
+            if local_id.x < BIN_COUNT {
+                histogram_local_sum = local_histogram[local_id.x];
+            }
+            // workgroup prefix sum
+            var histogram_prefix_sum = histogram_local_sum;
+            if local_id.x < BIN_COUNT {
+                sums[local_id.x] = histogram_prefix_sum;
+            }
+            for (var i = 0u; i < 4u; i++) {
+                workgroupBarrier();
+                if local_id.x >= (1u << i) && local_id.x < BIN_COUNT {
+                    histogram_prefix_sum += sums[local_id.x - (1u << i)];
+                }
+                workgroupBarrier();
+                if local_id.x < BIN_COUNT {
+                    sums[local_id.x] = histogram_prefix_sum;
+                }
+            }
+            let global_offset = bin_offset_cache[key_index];
+            workgroupBarrier();
+            var local_offset = local_id.x;
+            if key_index > 0u {
+                local_offset -= sums[key_index - 1u];
+            }
+            let total_offset = global_offset + local_offset;
+            if total_offset < config.num_keys {
+                out[total_offset] = local_key;
+            }
+            workgroupBarrier();
+            if local_id.x < BIN_COUNT {
+                bin_offset_cache[local_id.x] += local_histogram[local_id.x];
+            }
+            data_index += WG;
+        }
+    }
+}

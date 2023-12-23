@@ -28,6 +28,7 @@ struct Config {
     num_keys: u32,
     num_blocks_per_wg: u32,
     num_wgs: u32,
+    num_wgs_with_additional_blocks: u32,
     shift: u32,
 }
 
@@ -60,6 +61,7 @@ async fn run() {
         num_keys: 256,
         num_blocks_per_wg: 1,
         num_wgs: 1,
+        num_wgs_with_additional_blocks: 0,
         shift: 0,
     };
     let input_f = vec![1u32; 256];
