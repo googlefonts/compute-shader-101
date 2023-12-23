@@ -37,35 +37,38 @@ const BITS_PER_PASS = 4u;
 const BIN_COUNT = 1u << BITS_PER_PASS;
 const HISTOGRAM_SIZE = WG * BIN_COUNT;
 const ELEMENTS_PER_THREAD = 1u; // 4 in source
+const NUM_REDUCE_WG_PER_BIN = 1u; // config?
 
-var<workgroup> histogram: array<atomic<u32>, HISTOGRAM_SIZE>;
+var<workgroup> histogram: array<u32, HISTOGRAM_SIZE>;
 
 @compute
 @workgroup_size(WG)
-fn main(
+fn count(
     @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(global_invocation_id) global_id: vec3<u32>
+    @builtin(workgroup_id) wg_id: vec3<u32>,
 ) {
-    // TODO: a more interesting computation than this.
     for (var i = 0u; i < BIN_COUNT; i++) {
         histogram[i * WG + local_id.x] = 0u;
     }
     workgroupBarrier();
-    var block_index = local_id.x; // TODO: add threadgroup block start
-    let block_size = 1024u;
     let num_blocks = config.num_blocks_per_wg;
+    let wg_block_start = HISTOGRAM_SIZE * num_blocks * wg_id.x;
+    // TODO: handle additional blocks
+    var block_index = wg_block_start + local_id.x;
+    let block_size = 1024u;
     let shift_bit = config.shift;
     for (var block_count = 0u; block_count < num_blocks; block_count++) {
         var data_index = block_index;
         for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
             if data_index < config.num_keys {
                 let local_key = (src[data_index] >> shift_bit) & 0xfu;
-                atomicAdd(&histogram[local_key * WG + local_id.x], 1u);
+                histogram[local_key * WG + local_id.x] += 1u;
             }
             data_index += WG;
         }
         block_index += block_size;
     }
+    workgroupBarrier();
     if local_id.x < BIN_COUNT {
         var sum = 0u;
         for (var i = 0u; i < WG; i++) {
@@ -74,4 +77,95 @@ fn main(
         counts[local_id.x] = sum;
     }
 }
+
+var<workgroup> sums: array<u32, WG>;
+
+@compute
+@workgroup_size(WG)
+fn reduce(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    let bin_id = wg_id.x / NUM_REDUCE_WG_PER_BIN;
+    let bin_offset = bin_id * config.num_wgs;
+    let base_index = (wg_id.x % NUM_REDUCE_WG_PER_BIN) * ELEMENTS_PER_THREAD * WG;
+    var sum = 0u;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let data_index = base_index + i * WG + local_id.x;
+        if data_index < config.num_wgs {
+            sum += src[bin_offset + data_index];
+        }
+    }
+    sums[local_id.x] = sum;
+    for (var i = 0u; i < 8u; i++) {
+        workgroupBarrier();
+        if local_id.x < ((WG / 2u) >> i) {
+            sum += sums[local_id.x + ((WG / 2u) >> i)];
+            sums[local_id.x] = sum;
+        }
+    }
+    if local_id.x == 0u {
+        counts[wg_id.x] = sum;
+    }
+}
+
+var<workgroup> lds: array<array<u32, WG>, ELEMENTS_PER_THREAD>;
+
+@compute
+@workgroup_size(WG)
+fn scan_add (
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    let bin_id = wg_id.x / NUM_REDUCE_WG_PER_BIN;
+    let bin_offset = bin_id * config.num_wgs;
+    let base_index = (wg_id.x % NUM_REDUCE_WG_PER_BIN) * ELEMENTS_PER_THREAD * WG;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let data_index = base_index + i * WG + local_id.x;
+        let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
+        let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
+        lds[row][col] = src[bin_offset + data_index]; // TODO: gate?
+    }
+    workgroupBarrier();
+    var sum = 0u;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let tmp = lds[i][local_id.x];
+        lds[i][local_id.x] = sum;
+        sum += tmp;
+    }
+    // workgroup prefix sum
+    sums[local_id.x] = sum;
+    for (var i = 0u; i < 8u; i++) {
+        workgroupBarrier();
+        if local_id.x >= (1u << i) {
+            sum += sums[local_id.x - (1u << i)];
+        }
+        workgroupBarrier();
+        sums[local_id.x] = sum;
+    }
+    workgroupBarrier();
+    // TODO: load partial sum here
+    sum = 0u;
+    if local_id.x > 0u {
+        sum = sums[local_id.x - 1u];
+    }
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        lds[i][local_id.x] += sum;
+    }
+    // lds now contains exclusive prefix sum
+    // Note: storing inclusive might be slightly cheaper here
+    workgroupBarrier();
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let data_index = base_index + i * WG + local_id.x;
+        let col = (i * WG + local_id.x) / ELEMENTS_PER_THREAD;
+        let row = (i * WG + local_id.x) % ELEMENTS_PER_THREAD;
+        counts[bin_offset + data_index] = lds[row][col]; // TODO: gate?
+    }
+}
+
+var<workgroup> bin_offset_cache: array<u32, WG>;
+
+var<workgroup> local_histogram: array<u32, BIN_COUNT>;
+
+var<workgroup> lds_scratch: array<u32, WG>;
 
