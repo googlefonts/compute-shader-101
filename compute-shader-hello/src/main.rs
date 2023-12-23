@@ -22,7 +22,11 @@ use wgpu::util::DeviceExt;
 
 use bytemuck::{self, bytes_of, Pod, Zeroable};
 
-#[derive(Clone, Copy, Pod, Zeroable)]
+const WG: u32 = 256;
+const ELEMENTS_PER_THREAD: u32 = 4;
+const BLOCK_SIZE: u32 = WG * ELEMENTS_PER_THREAD;
+
+#[derive(Clone, Copy, Pod, Zeroable, Debug)]
 #[repr(C)]
 struct Config {
     num_keys: u32,
@@ -59,21 +63,30 @@ async fn run() {
         None
     };
 
+    let n = 1 << 11;
+    let input_f = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
+
+    // compute buffer and dispatch sizes
+    let num_blocks = (n + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
+    // TODO: multiple blocks per wg for large problems
+    let num_wgs = num_blocks;
+    let num_blocks_per_wg = num_blocks / num_wgs;
+    let num_wgs_with_additional_blocks = num_blocks % num_wgs;
+
     let config = Config {
-        num_keys: 256,
-        num_blocks_per_wg: 1,
-        num_wgs: 1,
-        num_wgs_with_additional_blocks: 0,
+        num_keys: n,
+        num_blocks_per_wg,
+        num_wgs,
+        num_wgs_with_additional_blocks,
         num_reduce_wg_per_bin: 1,
         num_scan_values: 1,
         shift: 0,
     };
-    let input_f = vec![1u32; 256];
+    println!("{config:?}");
 
     let start_instant = Instant::now();
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        //source: wgpu::ShaderSource::SpirV(bytes_to_u32(include_bytes!("alu.spv")).into()),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
@@ -92,13 +105,13 @@ async fn run() {
     });
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 64,
+        size: (num_blocks * 64).into(),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     let output_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 64,
+        size: (num_blocks * 64).into(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -189,12 +202,12 @@ async fn run() {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.dispatch_workgroups(config.num_wgs, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
     }
-    encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, 64);
+    encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, (num_blocks * 64).into());
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }

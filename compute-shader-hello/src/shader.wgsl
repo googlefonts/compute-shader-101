@@ -44,10 +44,11 @@ const OFFSET = 42u;
 const WG = 256u;
 const BITS_PER_PASS = 4u;
 const BIN_COUNT = 1u << BITS_PER_PASS;
-const BLOCK_SIZE = WG * BIN_COUNT;
-const ELEMENTS_PER_THREAD = 1u; // 4 in source
+const HISTOGRAM_SIZE = WG * BIN_COUNT;
+const ELEMENTS_PER_THREAD = 4u;
+const BLOCK_SIZE = WG * ELEMENTS_PER_THREAD;
 
-var<workgroup> histogram: array<u32, BLOCK_SIZE>;
+var<workgroup> histogram: array<u32, HISTOGRAM_SIZE>;
 
 @compute
 @workgroup_size(WG)
@@ -67,7 +68,6 @@ fn count(
         num_blocks += 1u;
     }
     var block_index = wg_block_start + local_id.x;
-    let block_size = 1024u;
     let shift_bit = config.shift;
     for (var block_count = 0u; block_count < num_blocks; block_count++) {
         var data_index = block_index;
@@ -78,7 +78,7 @@ fn count(
             }
             data_index += WG;
         }
-        block_index += block_size;
+        block_index += BLOCK_SIZE;
     }
     workgroupBarrier();
     if local_id.x < BIN_COUNT {
@@ -86,7 +86,7 @@ fn count(
         for (var i = 0u; i < WG; i++) {
             sum += histogram[local_id.x * WG + i];
         }
-        counts[local_id.x] = sum;
+        counts[local_id.x * config.num_wgs + group_id.x] = sum;
     }
 }
 
