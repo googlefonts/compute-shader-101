@@ -34,10 +34,10 @@ var<storage> src: array<u32>;
 var<storage, read_write> counts: array<u32>;
 
 @group(0) @binding(3)
-var<storage, read_write> out: array<u32>;
+var<storage, read_write> reduced: array<u32>;
 
 @group(0) @binding(4)
-var<storage, read_write> reduced: array<u32>;
+var<storage, read_write> out: array<u32>;
 
 const OFFSET = 42u;
 
