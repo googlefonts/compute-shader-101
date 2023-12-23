@@ -20,7 +20,16 @@ use std::time::Instant;
 
 use wgpu::util::DeviceExt;
 
-use bytemuck;
+use bytemuck::{self, bytes_of, Pod, Zeroable};
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct Config {
+    num_keys: u32,
+    num_blocks_per_wg: u32,
+    num_wgs: u32,
+    shift: u32,
+}
 
 async fn run() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -47,6 +56,14 @@ async fn run() {
         None
     };
 
+    let config = Config {
+        num_keys: 256,
+        num_blocks_per_wg: 1,
+        num_wgs: 1,
+        shift: 0,
+    };
+    let input_f = vec![1u32; 256];
+
     let start_instant = Instant::now();
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
@@ -54,8 +71,12 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
-    let input_f = &[1.0f32, 2.0f32];
-    let input: &[u8] = bytemuck::bytes_of(input_f);
+    let input: &[u8] = bytemuck::cast_slice(&input_f);
+    let config_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytes_of(&config),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: input,
@@ -65,7 +86,13 @@ async fn run() {
     });
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: input.len() as u64,
+        size: 64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let output_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -84,16 +111,38 @@ async fn run() {
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
     });
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -110,10 +159,20 @@ async fn run() {
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: input_buf.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: config_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
     });
 
     let mut encoder = device.create_command_encoder(&Default::default());
@@ -124,19 +183,19 @@ async fn run() {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(input_f.len() as u32, 1, 1);
+        cpass.dispatch_workgroups(1, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
     }
-    encoder.copy_buffer_to_buffer(&input_buf, 0, &output_buf, 0, input.len() as u64);
+    encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, 64);
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }
     encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
     queue.submit(Some(encoder.finish()));
 
-    let buf_slice = output_buf.slice(..);
+    let buf_slice = output_staging_buf.slice(..);
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
     buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let query_slice = query_staging_buf.slice(..);
@@ -148,7 +207,7 @@ async fn run() {
     println!("post-poll {:?}", std::time::Instant::now());
     if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[f32] = bytemuck::cast_slice(data_raw);
+        let data: &[u32] = bytemuck::cast_slice(data_raw);
         println!("data: {:?}", &*data);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
