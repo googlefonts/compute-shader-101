@@ -64,7 +64,7 @@ async fn run() {
         None
     };
 
-    let n = 1 << 25;
+    let n = 1 << 21;
     let input_f = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
 
     // compute buffer and dispatch sizes
@@ -79,13 +79,14 @@ async fn run() {
     } else {
         (num_wgs + BLOCK_SIZE - 1) / BLOCK_SIZE
     };
+    let num_reduce_wg_per_bin = num_reduce_wgs / BIN_COUNT;
 
     let config = Config {
         num_keys: n,
         num_blocks_per_wg,
         num_wgs,
         num_wgs_with_additional_blocks,
-        num_reduce_wg_per_bin: 1,
+        num_reduce_wg_per_bin,
         num_scan_values: num_reduce_wgs,
         shift: 0,
     };
@@ -124,7 +125,7 @@ async fn run() {
     });
     let output_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: (num_blocks * 64).into(),
+        size: (BLOCK_SIZE * 64).into(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -203,6 +204,12 @@ async fn run() {
         module: &cs_module,
         entry_point: "reduce",
     });
+    let scan_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&compute_pipeline_layout),
+        module: &cs_module,
+        entry_point: "scan",
+    });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -238,11 +245,13 @@ async fn run() {
         cpass.dispatch_workgroups(config.num_wgs, 1, 1);
         cpass.set_pipeline(&reduce_pipeline);
         cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
+        cpass.set_pipeline(&scan_pipeline);
+        cpass.dispatch_workgroups(1, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
     }
-    encoder.copy_buffer_to_buffer(&reduced_buf, 0, &output_staging_buf, 0, 1024 * 4);
+    encoder.copy_buffer_to_buffer(&reduced_buf, 0, &output_staging_buf, 0, 4096);
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }
@@ -262,7 +271,8 @@ async fn run() {
     if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
         let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("data: {:?}", &data[..16]);
+        println!("data size = {}", data.len());
+        println!("data: {:?}", &data[..64]);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();

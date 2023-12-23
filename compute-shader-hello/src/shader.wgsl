@@ -100,7 +100,7 @@ fn reduce(
 ) {
     let bin_id = group_id.x / config.num_reduce_wg_per_bin;
     let bin_offset = bin_id * config.num_wgs;
-    let base_index = (group_id.x % config.num_reduce_wg_per_bin) * ELEMENTS_PER_THREAD * WG;
+    let base_index = (group_id.x % config.num_reduce_wg_per_bin) * BLOCK_SIZE;
     var sum = 0u;
     for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let data_index = base_index + i * WG + local_id.x;
@@ -129,6 +129,7 @@ fn scan(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
 ) {
+    // We only dispatch a single wg, so I think this is always 0
     let base_index = BLOCK_SIZE * group_id.x;
     let num_values_to_scan = config.num_scan_values;
     for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
