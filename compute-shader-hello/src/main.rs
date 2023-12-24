@@ -64,8 +64,9 @@ async fn run() {
         None
     };
 
-    let n = 1 << 21;
+    let n = 1 << 24;
     let input_f = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
+    //let input_f = (0..n).collect::<Vec<_>>();
 
     // compute buffer and dispatch sizes
     let num_blocks = (n + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
@@ -123,9 +124,15 @@ async fn run() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
+    let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: input_buf.size(),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
     let output_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: (num_blocks * 64).into(),
+        size: output_buf.size(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -185,6 +192,16 @@ async fn run() {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -216,6 +233,12 @@ async fn run() {
         module: &cs_module,
         entry_point: "scan_add",
     });
+    let scatter_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("scatter"),
+        layout: Some(&compute_pipeline_layout),
+        module: &cs_module,
+        entry_point: "scatter",
+    });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -237,59 +260,74 @@ async fn run() {
                 binding: 3,
                 resource: reduced_buf.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: output_buf.as_entire_binding(),
+            },
         ],
     });
 
-    let mut encoder = device.create_command_encoder(&Default::default());
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 0);
-    }
-    {
-        let mut cpass = encoder.begin_compute_pass(&Default::default());
-        cpass.set_pipeline(&count_pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(config.num_wgs, 1, 1);
-        cpass.set_pipeline(&reduce_pipeline);
-        cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
-        cpass.set_pipeline(&scan_pipeline);
-        cpass.dispatch_workgroups(1, 1, 1);
-        cpass.set_pipeline(&scan_add_pipeline);
-        cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
-    }
-    if let Some(query_set) = &query_set {
-        encoder.write_timestamp(query_set, 1);
-    }
-    encoder.copy_buffer_to_buffer(&count_buf, 0, &output_staging_buf, 0, (num_blocks * 64).into());
-    if let Some(query_set) = &query_set {
-        encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
-    }
-    encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
-    queue.submit(Some(encoder.finish()));
+    for iter in 0..10 {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        if let Some(query_set) = &query_set {
+            encoder.write_timestamp(query_set, 0);
+        }
+        {
+            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            for _pass in 0..8 {
+                // TODO: set config based on pass
+                cpass.set_pipeline(&count_pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+                cpass.dispatch_workgroups(config.num_wgs, 1, 1);
+                cpass.set_pipeline(&reduce_pipeline);
+                cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
+                cpass.set_pipeline(&scan_pipeline);
+                cpass.dispatch_workgroups(1, 1, 1);
+                cpass.set_pipeline(&scan_add_pipeline);
+                cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
+                cpass.set_pipeline(&scatter_pipeline);
+                cpass.dispatch_workgroups(config.num_wgs, 1, 1);
+            }
+        }
+        if let Some(query_set) = &query_set {
+            encoder.write_timestamp(query_set, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, output_buf.size());
+        if let Some(query_set) = &query_set {
+            encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
+        }
+        encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
+        queue.submit(Some(encoder.finish()));
 
-    let buf_slice = output_staging_buf.slice(..);
-    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-    buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    let query_slice = query_staging_buf.slice(..);
-    // Assume that both buffers become available at the same time. A more careful
-    // approach would be to wait for both notifications to be sent.
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read, |_| ());
-    println!("pre-poll {:?}", std::time::Instant::now());
-    device.poll(wgpu::Maintain::Wait);
-    println!("post-poll {:?}", std::time::Instant::now());
-    if let Some(Ok(())) = receiver.receive().await {
-        let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[u32] = bytemuck::cast_slice(data_raw);
-        println!("data size = {}", data.len());
-        println!("data: {:?}", &data[..32]);
-    }
-    if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-        let ts_period = queue.get_timestamp_period();
-        let ts_data_raw = &*query_slice.get_mapped_range();
-        let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
-        println!(
-            "compute shader elapsed: {:?}ms",
-            (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
-        );
+        let buf_slice = output_staging_buf.slice(..);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+        let query_slice = query_staging_buf.slice(..);
+        // Assume that both buffers become available at the same time. A more careful
+        // approach would be to wait for both notifications to be sent.
+        let _query_future = query_slice.map_async(wgpu::MapMode::Read, |_| ());
+        let poll_start_time =  std::time::Instant::now();
+        device.poll(wgpu::Maintain::Wait);
+        println!("poll time {:?}", poll_start_time.elapsed());
+        if let Some(Ok(())) = receiver.receive().await {
+            let data_raw = &*buf_slice.get_mapped_range();
+            let data: &[u32] = bytemuck::cast_slice(data_raw);
+            if iter == 0 {
+                println!("data size = {}", data.len());
+                println!("data: {:x?}", &data[..32]);
+            }
+        }
+        if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            let ts_period = queue.get_timestamp_period();
+            let ts_data_raw = &*query_slice.get_mapped_range();
+            let ts_data: &[u64] = bytemuck::cast_slice(ts_data_raw);
+            println!(
+                "compute shader elapsed: {:?}ms",
+                (ts_data[1] - ts_data[0]) as f64 * ts_period as f64 * 1e-6
+            );
+        }
+        output_staging_buf.unmap();
+        query_staging_buf.unmap();
     }
 }
 

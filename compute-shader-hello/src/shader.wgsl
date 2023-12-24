@@ -48,7 +48,51 @@ const HISTOGRAM_SIZE = WG * BIN_COUNT;
 const ELEMENTS_PER_THREAD = 4u;
 const BLOCK_SIZE = WG * ELEMENTS_PER_THREAD;
 
-var<workgroup> histogram: array<u32, HISTOGRAM_SIZE>;
+// Following version follows original and is designed to minimize atomic contention.
+
+// var<workgroup> histogram: array<u32, HISTOGRAM_SIZE>;
+
+// @compute
+// @workgroup_size(WG)
+// fn count(
+//     @builtin(local_invocation_id) local_id: vec3<u32>,
+//     @builtin(workgroup_id) group_id: vec3<u32>,
+// ) {
+//     for (var i = 0u; i < BIN_COUNT; i++) {
+//         histogram[i * WG + local_id.x] = 0u;
+//     }
+//     workgroupBarrier();
+//     var num_blocks = config.num_blocks_per_wg;
+//     var wg_block_start = BLOCK_SIZE * num_blocks * group_id.x;
+//     let num_not_additional = config.num_wgs - config.num_wgs_with_additional_blocks;
+//     if group_id.x >= num_not_additional {
+//         wg_block_start += (group_id.x - num_not_additional) * BLOCK_SIZE;
+//         num_blocks += 1u;
+//     }
+//     var block_index = wg_block_start + local_id.x;
+//     let shift_bit = config.shift;
+//     for (var block_count = 0u; block_count < num_blocks; block_count++) {
+//         var data_index = block_index;
+//         for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+//             if data_index < config.num_keys {
+//                 let local_key = (src[data_index] >> shift_bit) & 0xfu;
+//                 histogram[local_key * WG + local_id.x] += 1u;
+//             }
+//             data_index += WG;
+//         }
+//         block_index += BLOCK_SIZE;
+//     }
+//     workgroupBarrier();
+//     if local_id.x < BIN_COUNT {
+//         var sum = 0u;
+//         for (var i = 0u; i < WG; i++) {
+//             sum += histogram[local_id.x * WG + i];
+//         }
+//         counts[local_id.x * config.num_wgs + group_id.x] = sum;
+//     }
+// }
+
+var<workgroup> histogram: array<atomic<u32>, BIN_COUNT>;
 
 @compute
 @workgroup_size(WG)
@@ -56,8 +100,8 @@ fn count(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
 ) {
-    for (var i = 0u; i < BIN_COUNT; i++) {
-        histogram[i * WG + local_id.x] = 0u;
+    if local_id.x < BIN_COUNT {
+        histogram[local_id.x] = 0u;
     }
     workgroupBarrier();
     var num_blocks = config.num_blocks_per_wg;
@@ -74,7 +118,7 @@ fn count(
         for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
             if data_index < config.num_keys {
                 let local_key = (src[data_index] >> shift_bit) & 0xfu;
-                histogram[local_key * WG + local_id.x] += 1u;
+                atomicAdd(&histogram[local_key], 1u);
             }
             data_index += WG;
         }
@@ -82,11 +126,7 @@ fn count(
     }
     workgroupBarrier();
     if local_id.x < BIN_COUNT {
-        var sum = 0u;
-        for (var i = 0u; i < WG; i++) {
-            sum += histogram[local_id.x * WG + i];
-        }
-        counts[local_id.x * config.num_wgs + group_id.x] = sum;
+        counts[local_id.x * config.num_wgs + group_id.x] = histogram[local_id.x];
     }
 }
 
@@ -236,12 +276,12 @@ var<workgroup> local_histogram: array<atomic<u32>, BIN_COUNT>;
 
 @compute
 @workgroup_size(WG)
-fn scatter (
+fn scatter(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>,
 ) {
     if local_id.x < BIN_COUNT {
-        bin_offset_cache[local_id.x] = sums[local_id.x * config.num_wgs + group_id.x];
+        bin_offset_cache[local_id.x] = counts[local_id.x * config.num_wgs + group_id.x];
     }
     workgroupBarrier();
     let wg_block_start = BLOCK_SIZE * config.num_blocks_per_wg * group_id.x;
