@@ -64,9 +64,13 @@ async fn run() {
         None
     };
 
-    let n = 1 << 12;
-    let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
-    //let input = (0..n).collect::<Vec<_>>();
+    let n = 1 << 16;
+    //let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
+    let input = (0..n).collect::<Vec<_>>();
+
+    let start_sort = std::time::Instant::now();
+    let expected = sort_all(&input);
+    println!("CPU sort elapsed: {:?}", start_sort.elapsed());
 
     // compute buffer and dispatch sizes
     let num_blocks = (n + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
@@ -126,7 +130,7 @@ async fn run() {
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: input_buf.size(),
-        usage: wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     let output_buf_2 = device.create_buffer(&wgpu::BufferDescriptor {
@@ -368,7 +372,7 @@ async fn run() {
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 1);
         }
-        encoder.copy_buffer_to_buffer(&output_buf_2, 0, &output_staging_buf, 0, output_buf.size());
+        encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, output_buf.size());
         if let Some(query_set) = &query_set {
             encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
         }
@@ -390,7 +394,12 @@ async fn run() {
             let data: &[u32] = bytemuck::cast_slice(data_raw);
             if iter == 0 {
                 println!("data size = {}", data.len());
-                println!("data: {:x?}", &data[..128]);
+                println!("data: {:x?}", &data[..32]);
+                println!("expected: {:x?}", &expected[..32]);
+                let first_diff = data.iter().zip(&expected).position(|(a, b)| a != b);
+                if let Some(ix) = first_diff {
+                    println!("discrepancy at {ix}, got {} expected {}", data[ix], expected[ix]);
+                }
             }
         }
         if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
@@ -405,6 +414,21 @@ async fn run() {
         output_staging_buf.unmap();
         query_staging_buf.unmap();
     }
+}
+
+// Useful for verifying the operation of a single digit
+#[allow(unused)]
+fn sort_digit(input: &[u32], digit: u32) -> Vec<u32> {
+    let mut result = input.to_owned();
+    let shift = digit * 4;
+    result.sort_by(|a, b| ((a >> shift) & 0xf).cmp(&((b >> shift) & 0xf)));
+    result
+}
+
+fn sort_all(input: &[u32]) -> Vec<u32> {
+    let mut result = input.to_owned();
+    result.sort();
+    result
 }
 
 fn main() {

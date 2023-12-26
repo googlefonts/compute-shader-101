@@ -296,7 +296,7 @@ fn scatter(
             }
             var local_key = ~0u;
             if data_index < config.num_keys {
-                local_key = src[data_index + i];
+                local_key = src[data_index];
             }
             for (var bit_shift = 0u; bit_shift < BITS_PER_PASS; bit_shift += 2u) {
                 let key_index = (local_key >> config.shift) & 0xfu;
@@ -364,6 +364,7 @@ fn scatter(
                 bin_offset_cache[local_id.x] += local_histogram[local_id.x];
             }
             data_index += WG;
+            workgroupBarrier(); // protect local_histogram from WAR
         }
     }
 }
