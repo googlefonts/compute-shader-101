@@ -20,14 +20,14 @@ use std::time::Instant;
 
 use wgpu::util::DeviceExt;
 
-use bytemuck::{self, bytes_of, Pod, Zeroable};
+use bytemuck::{self, bytes_of, Pod, Zeroable, offset_of};
 
 const WG: u32 = 256;
 const ELEMENTS_PER_THREAD: u32 = 4;
 const BLOCK_SIZE: u32 = WG * ELEMENTS_PER_THREAD;
 const BIN_COUNT: u32 = 16;
 
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Clone, Copy, Default, Pod, Zeroable, Debug)]
 #[repr(C)]
 struct Config {
     num_keys: u32,
@@ -64,9 +64,9 @@ async fn run() {
         None
     };
 
-    let n = 1 << 24;
-    let input_f = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
-    //let input_f = (0..n).collect::<Vec<_>>();
+    let n = 1 << 12;
+    let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
+    //let input = (0..n).collect::<Vec<_>>();
 
     // compute buffer and dispatch sizes
     let num_blocks = (n + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
@@ -99,15 +99,14 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
-    let input: &[u8] = bytemuck::cast_slice(&input_f);
     let config_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytes_of(&config),
-        usage: wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: input,
+        contents: bytemuck::cast_slice(&input),
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
@@ -125,6 +124,12 @@ async fn run() {
         mapped_at_creation: false,
     });
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: input_buf.size(),
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let output_buf_2 = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: input_buf.size(),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -148,6 +153,15 @@ async fn run() {
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let shifts = (0..8).map(|x| x * 4).collect::<Vec<u32>>();
+    let shifts_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&shifts),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+    });
+
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -240,7 +254,7 @@ async fn run() {
         entry_point: "scatter",
     });
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group_init = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &bind_group_layout,
         entries: &[
@@ -266,33 +280,95 @@ async fn run() {
             },
         ],
     });
+    let bind_group_odd = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: config_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: count_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: reduced_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: output_buf_2.as_entire_binding(),
+            },
+        ],
+    });
+    let bind_group_even = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: config_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf_2.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: count_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: reduced_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
+    });
 
     for iter in 0..10 {
         let mut encoder = device.create_command_encoder(&Default::default());
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 0);
         }
-        {
+        for pass in 0..8 {
+            // The most straightforward way to update the shift amount would be
+            // queue.buffer_write, but that has performance problems, so we copy
+            // from a pre-initialized buffer.
+            let shift_offset = offset_of!(Config, shift);
+            encoder.copy_buffer_to_buffer(&shifts_buf, 4 * pass, &config_buf, shift_offset as _, 4);
             let mut cpass = encoder.begin_compute_pass(&Default::default());
-            for _pass in 0..8 {
-                // TODO: set config based on pass
-                cpass.set_pipeline(&count_pipeline);
-                cpass.set_bind_group(0, &bind_group, &[]);
-                cpass.dispatch_workgroups(config.num_wgs, 1, 1);
-                cpass.set_pipeline(&reduce_pipeline);
-                cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
-                cpass.set_pipeline(&scan_pipeline);
-                cpass.dispatch_workgroups(1, 1, 1);
-                cpass.set_pipeline(&scan_add_pipeline);
-                cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
-                cpass.set_pipeline(&scatter_pipeline);
-                cpass.dispatch_workgroups(config.num_wgs, 1, 1);
-            }
+            // TODO: set config based on pass
+            cpass.set_pipeline(&count_pipeline);
+            let bind_group = if pass == 0 {
+                &bind_group_init
+            } else if pass % 2 == 1 {
+                &bind_group_odd
+            } else {
+                &bind_group_even
+            };
+            cpass.set_bind_group(0, bind_group, &[]);
+            cpass.dispatch_workgroups(config.num_wgs, 1, 1);
+            cpass.set_pipeline(&reduce_pipeline);
+            cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
+            cpass.set_pipeline(&scan_pipeline);
+            cpass.dispatch_workgroups(1, 1, 1);
+            cpass.set_pipeline(&scan_add_pipeline);
+            cpass.dispatch_workgroups(num_reduce_wgs, 1, 1);
+            cpass.set_pipeline(&scatter_pipeline);
+            cpass.dispatch_workgroups(config.num_wgs, 1, 1);
         }
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 1);
         }
-        encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, output_buf.size());
+        encoder.copy_buffer_to_buffer(&output_buf_2, 0, &output_staging_buf, 0, output_buf.size());
         if let Some(query_set) = &query_set {
             encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
         }
@@ -314,7 +390,7 @@ async fn run() {
             let data: &[u32] = bytemuck::cast_slice(data_raw);
             if iter == 0 {
                 println!("data size = {}", data.len());
-                println!("data: {:x?}", &data[..32]);
+                println!("data: {:x?}", &data[..128]);
             }
         }
         if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
