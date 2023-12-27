@@ -403,24 +403,10 @@ fn multisplit(
         let digit = (key >> config.shift) % BIN_COUNT;
         sh_wmls_keys[local_id.x] = digit;
         workgroupBarrier();
-        if local_id.x % 4u == 0u {
-            var packed = 0u;
-            for (var j = 0u; j < 4u; j++) {
-                packed += sh_wmls_keys[local_id.x + j] << (j * 8u);
-            }
-            sh_wmls_ballot[local_id.x / 4u] = packed;
-        }
-        workgroupBarrier();
         var ballot = 0u;
-        var bit = 1u;
-        for (var j = 0u; j < N_WARPS; j++) {
-            var other = sh_wmls_ballot[warp_ix * 8u + j];
-            for (var k = 0u; k < 4u; k++) {
-                if digit == (other & 0xffu) {
-                    ballot |= bit;
-                }
-                bit = bit << 1u;
-                other = other >> 8u;
+        for (var j = 0u; j < WARP_SIZE; j++) {
+            if digit == sh_wmls_keys[warp_ix * WARP_SIZE + j] {
+                ballot |= (1u << j);
             }
         }
         let rank = countOneBits(ballot << (WARP_SIZE - 1u - lane_ix));
