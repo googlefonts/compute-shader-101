@@ -64,7 +64,7 @@ async fn run() {
         None
     };
 
-    let n = 1 << 16;
+    let n = 1 << 10;
     //let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
     let input = (0..n).collect::<Vec<_>>();
 
@@ -255,7 +255,7 @@ async fn run() {
         label: Some("scatter"),
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
-        entry_point: "scatter",
+        entry_point: "multisplit",
     });
 
     let bind_group_init = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -342,7 +342,7 @@ async fn run() {
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 0);
         }
-        for pass in 0..8 {
+        for pass in 0..1 {
             // The most straightforward way to update the shift amount would be
             // queue.buffer_write, but that has performance problems, so we copy
             // from a pre-initialized buffer.
@@ -394,7 +394,7 @@ async fn run() {
             let data: &[u32] = bytemuck::cast_slice(data_raw);
             if iter == 0 {
                 println!("data size = {}", data.len());
-                println!("data: {:x?}", &data[..32]);
+                println!("data: {:x?}", &data[..]);
                 println!("expected: {:x?}", &expected[..32]);
                 let first_diff = data.iter().zip(&expected).position(|(a, b)| a != b);
                 if let Some(ix) = first_diff {

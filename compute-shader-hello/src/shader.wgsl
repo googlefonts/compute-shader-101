@@ -423,7 +423,7 @@ fn multisplit(
                 other = other >> 8u;
             }
         }
-        let rank = (ballot << (WARP_SIZE - 1u - lane_ix));
+        let rank = countOneBits(ballot << (WARP_SIZE - 1u - lane_ix));
         let wmls_ix = digit * N_WARPS + warp_ix;
         offsets[i] = sh_wmls[wmls_ix] + rank - 1u;
         workgroupBarrier();
@@ -437,8 +437,8 @@ fn multisplit(
     if local_id.x < WMLS_SIZE {
         sum = sh_wmls[local_id.x];
     }
-    let sub_ix = local_id.x % BIN_COUNT;
-    for (var i = 0u; i < BITS_PER_PASS; i++) {
+    let sub_ix = local_id.x % N_WARPS;
+    for (var i = 0u; i < 3u; i++) {
         if local_id.x < WMLS_SIZE && sub_ix >= (1u << i) {
             sum += sh_wmls[local_id.x - (1u << i)];
         }
@@ -461,6 +461,7 @@ fn multisplit(
             total_offset += sh_wmls[digit * N_WARPS + warp_ix - 1u];
         }
         total_offset += offsets[i];
+        //out[ix] = sh_wmls[digit * N_WARPS + warp_ix - 1u];
         if total_offset < config.num_keys {
             out[total_offset] = key;
         }
