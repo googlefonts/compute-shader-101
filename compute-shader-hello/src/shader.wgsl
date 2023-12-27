@@ -368,11 +368,17 @@ fn scatter(
     }
 }
 
-const WARP_SIZE = 32u;
+// An implementation of warp-local multisplit. See the Onesweep paper.
+
+// Since WGSL doesn't yet have subgroups, we use the terms "warp" and "lane"
+// to describe the arrangement of data, and simulate the warp ballot operation
+// using simple iteration across values in shared memory.
+
+const WARP_SIZE = 16u;
 const N_WARPS = WG / WARP_SIZE;
 const WMLS_SIZE = N_WARPS * BIN_COUNT;
 
-var<workgroup> sh_wmls: array<u32, WMLS_SIZE>;
+var<workgroup> sh_wmls_histogram: array<u32, WMLS_SIZE>;
 var<workgroup> sh_wmls_keys: array<u32, WG>;
 var<workgroup> sh_wmls_ballot: array<u32, 64>;
 
@@ -386,7 +392,7 @@ fn multisplit(
         bin_offset_cache[local_id.x] = counts[local_id.x * config.num_wgs + group_id.x];
     }
     if local_id.x < WMLS_SIZE {
-        sh_wmls[local_id.x] = 0u;
+        sh_wmls_histogram[local_id.x] = 0u;
     }
     let warp_ix = local_id.x / WARP_SIZE;
     let lane_ix = local_id.x % WARP_SIZE;
@@ -409,28 +415,28 @@ fn multisplit(
                 ballot |= (1u << j);
             }
         }
-        let rank = countOneBits(ballot << (WARP_SIZE - 1u - lane_ix));
+        let rank = countOneBits(ballot << (31u - lane_ix));
         let wmls_ix = digit * N_WARPS + warp_ix;
-        offsets[i] = sh_wmls[wmls_ix] + rank - 1u;
+        offsets[i] = sh_wmls_histogram[wmls_ix] + rank - 1u;
         workgroupBarrier();
         if rank == 1u {
-            sh_wmls[wmls_ix] += countOneBits(ballot);
+            sh_wmls_histogram[wmls_ix] += countOneBits(ballot);
         }
     }
     // Prefix sum over warps for each digit
     workgroupBarrier();
     var sum = 0u;
     if local_id.x < WMLS_SIZE {
-        sum = sh_wmls[local_id.x];
+        sum = sh_wmls_histogram[local_id.x];
     }
     let sub_ix = local_id.x % N_WARPS;
-    for (var i = 0u; i < 3u; i++) {
+    for (var i = 0u; i < firstTrailingBit(N_WARPS); i++) {
         if local_id.x < WMLS_SIZE && sub_ix >= (1u << i) {
-            sum += sh_wmls[local_id.x - (1u << i)];
+            sum += sh_wmls_histogram[local_id.x - (1u << i)];
         }
         workgroupBarrier();
         if local_id.x < WMLS_SIZE && sub_ix >= (1u << i) {
-            sh_wmls[local_id.x] = sum;
+            sh_wmls_histogram[local_id.x] = sum;
         }
         workgroupBarrier();
     }
@@ -444,10 +450,9 @@ fn multisplit(
         let digit = (key >> config.shift) % BIN_COUNT;
         var total_offset = bin_offset_cache[digit];
         if warp_ix > 0u {
-            total_offset += sh_wmls[digit * N_WARPS + warp_ix - 1u];
+            total_offset += sh_wmls_histogram[digit * N_WARPS + warp_ix - 1u];
         }
         total_offset += offsets[i];
-        //out[ix] = sh_wmls[digit * N_WARPS + warp_ix - 1u];
         if total_offset < config.num_keys {
             out[total_offset] = key;
         }
