@@ -359,12 +359,111 @@ fn scatter(
             if total_offset < config.num_keys {
                 out[total_offset] = local_key;
             }
-            workgroupBarrier();
             if local_id.x < BIN_COUNT {
                 bin_offset_cache[local_id.x] += local_histogram[local_id.x];
             }
+            workgroupBarrier();
             data_index += WG;
-            workgroupBarrier(); // protect local_histogram from WAR
         }
     }
+}
+
+const WARP_SIZE = 32u;
+const N_WARPS = WG / WARP_SIZE;
+const WMLS_SIZE = N_WARPS * BIN_COUNT;
+
+var<workgroup> sh_wmls: array<u32, WMLS_SIZE>;
+var<workgroup> sh_wmls_keys: array<u32, WG>;
+var<workgroup> sh_wmls_ballot: array<u32, 64>;
+
+@compute
+@workgroup_size(WG)
+fn multisplit(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) group_id: vec3<u32>,
+) {
+    if local_id.x < BIN_COUNT {
+        bin_offset_cache[local_id.x] = counts[local_id.x * config.num_wgs + group_id.x];
+    }
+    if local_id.x < WMLS_SIZE {
+        sh_wmls[local_id.x] = 0u;
+    }
+    let warp_ix = local_id.x / WARP_SIZE;
+    let lane_ix = local_id.x % WARP_SIZE;
+    let base_ix = BLOCK_SIZE * group_id.x + warp_ix * (WARP_SIZE * ELEMENTS_PER_THREAD) + lane_ix;
+    workgroupBarrier();
+    // Note: these can be stored packed, either u16 or packed by hand
+    var offsets: array<u32, ELEMENTS_PER_THREAD>;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let ix = base_ix + i * WARP_SIZE;
+        var key = ~0u;
+        if ix < config.num_keys {
+            key = src[ix];
+        }
+        let digit = (key >> config.shift) % BIN_COUNT;
+        sh_wmls_keys[local_id.x] = digit;
+        workgroupBarrier();
+        if local_id.x % 4u == 0u {
+            var packed = 0u;
+            for (var j = 0u; j < 4u; j++) {
+                packed += sh_wmls_keys[local_id.x + j] << (j * 8u);
+            }
+            sh_wmls_ballot[local_id.x / 4u] = packed;
+        }
+        workgroupBarrier();
+        var ballot = 0u;
+        var bit = 1u;
+        for (var j = 0u; j < N_WARPS; j++) {
+            var other = sh_wmls_ballot[warp_ix * 8u + j];
+            for (var k = 0u; k < 4u; k++) {
+                if digit == (other & 0xffu) {
+                    ballot |= bit;
+                }
+                bit = bit << 1u;
+                other = other >> 8u;
+            }
+        }
+        let rank = (ballot << (WARP_SIZE - 1u - lane_ix));
+        let wmls_ix = digit * N_WARPS + warp_ix;
+        offsets[i] = sh_wmls[wmls_ix] + rank - 1u;
+        workgroupBarrier();
+        if rank == 1u {
+            sh_wmls[wmls_ix] += countOneBits(ballot);
+        }
+    }
+    // Prefix sum over warps for each digit
+    workgroupBarrier();
+    var sum = 0u;
+    if local_id.x < WMLS_SIZE {
+        sum = sh_wmls[local_id.x];
+    }
+    let sub_ix = local_id.x % BIN_COUNT;
+    for (var i = 0u; i < BITS_PER_PASS; i++) {
+        if local_id.x < WMLS_SIZE && sub_ix >= (1u << i) {
+            sum += sh_wmls[local_id.x - (1u << i)];
+        }
+        workgroupBarrier();
+        if local_id.x < WMLS_SIZE && sub_ix >= (1u << i) {
+            sh_wmls[local_id.x] = sum;
+        }
+        workgroupBarrier();
+    }
+    // scatter
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let ix = base_ix + i * WARP_SIZE;
+        var key = ~0u;
+        if ix < config.num_keys {
+            key = src[ix];
+        }
+        let digit = (key >> config.shift) % BIN_COUNT;
+        var total_offset = bin_offset_cache[digit];
+        if warp_ix > 0u {
+            total_offset += sh_wmls[digit * N_WARPS + warp_ix - 1u];
+        }
+        total_offset += offsets[i];
+        if total_offset < config.num_keys {
+            out[total_offset] = key;
+        }
+    }
+    // TODO (multiple blocks per wg): update bin_offset_cache
 }
