@@ -64,9 +64,9 @@ async fn run() {
         None
     };
 
-    let n = 1 << 10;
-    //let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
-    let input = (0..n).collect::<Vec<_>>();
+    let n = 1 << 24;
+    let input = (0..n).map(|_| fastrand::u32(..)).collect::<Vec<_>>();
+    //let input = (0..n).collect::<Vec<_>>();
 
     let start_sort = std::time::Instant::now();
     let expected = sort_all(&input);
@@ -342,7 +342,8 @@ async fn run() {
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 0);
         }
-        for pass in 0..1 {
+        const N_PASSES: u64 = 8;
+        for pass in 0..N_PASSES {
             // The most straightforward way to update the shift amount would be
             // queue.buffer_write, but that has performance problems, so we copy
             // from a pre-initialized buffer.
@@ -372,7 +373,12 @@ async fn run() {
         if let Some(query_set) = &query_set {
             encoder.write_timestamp(query_set, 1);
         }
-        encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging_buf, 0, output_buf.size());
+        let final_output_buf = if N_PASSES % 2 == 0 {
+            &output_buf_2
+        } else {
+            &output_buf
+        };
+        encoder.copy_buffer_to_buffer(&final_output_buf, 0, &output_staging_buf, 0, output_buf.size());
         if let Some(query_set) = &query_set {
             encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
         }
@@ -394,7 +400,7 @@ async fn run() {
             let data: &[u32] = bytemuck::cast_slice(data_raw);
             if iter == 0 {
                 println!("data size = {}", data.len());
-                println!("data: {:x?}", &data[..]);
+                println!("data: {:x?}", &data[..32]);
                 println!("expected: {:x?}", &expected[..32]);
                 let first_diff = data.iter().zip(&expected).position(|(a, b)| a != b);
                 if let Some(ix) = first_diff {
