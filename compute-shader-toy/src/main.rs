@@ -16,6 +16,8 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
+use std::io::{BufReader, BufRead};
+
 use wgpu::util::DeviceExt;
 use wgpu::{BufferUsages, Extent3d, SamplerBindingType};
 
@@ -103,7 +105,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             entry_point: "fs_main",
             targets: &[Some(format.into())],
         }),
-        primitive: wgpu::PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
@@ -259,7 +264,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     });
                     rpass.set_pipeline(&render_pipeline);
                     rpass.set_bind_group(0, &copy_bind_group, &[]);
-                    rpass.draw(0..3, 0..2);
+                    rpass.draw(0..4, 0..1);
                 }
                 queue.submit(Some(encoder.finish()));
                 frame.present();
@@ -277,6 +282,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 }
 
 fn main() {
+    let filename = std::env::args().nth(1).expect("need filename");
+    let f = std::fs::File::open(filename).unwrap();
+    let buffered = BufReader::new(f);
+    for line in buffered.lines() {
+        let l = line.unwrap();
+        let s = l.split(' ').collect::<Vec<_>>();
+        if s.first() == Some(&"strip") {
+            println!("{s:?}");
+        }
+    }
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop).unwrap();
     window.set_resizable(false);
