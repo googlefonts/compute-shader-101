@@ -21,6 +21,25 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
 };
 
+struct Config {
+    width: u32,
+    height: u32,
+    strip_height: u32,
+}
+
+struct Strip {
+    path_id: u32,
+    y: u32,
+    x0: u32,
+    x1: u32,
+}
+
+@group(0) @binding(2)
+var<uniform> config: Config;
+
+@group(0) @binding(3)
+var<storage> strips: array<Strip>;
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) in_vertex_index: u32,
@@ -29,7 +48,12 @@ fn vs_main(
     var out: VertexOutput;
     let x = f32(in_vertex_index & 1u);
     let y = f32(in_vertex_index >> 1u);
-    out.position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    let strip = strips[in_instance_index];
+    let pix_x = f32(strip.x0) + (f32(strip.x1) - f32(strip.x0)) * x;
+    let pix_y = (f32(strip.y) + y) * f32(config.strip_height);
+    let gl_x = (pix_x + 0.5) * 2.0 / f32(config.width) - 1.0;
+    let gl_y = 1.0 - (pix_y + 0.5) * 2.0 / f32(config.height);
+    out.position = vec4<f32>(gl_x, gl_y, 0.0, 1.0);
     out.tex_coord = vec2<f32>(x, y);
     return out;
 }

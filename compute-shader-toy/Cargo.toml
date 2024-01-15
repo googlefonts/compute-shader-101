@@ -11,4 +11,4 @@ wgpu = { version = "0.18" }
 winit = "0.28"
 pollster = "0.3"
 async-executor = "1.8"
-bytemuck = "1.14"
+bytemuck = { version = "1.14", features = ["derive"] }
