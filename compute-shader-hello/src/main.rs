@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
 use bytemuck;
 
@@ -28,16 +28,13 @@ async fn run() {
     let features = adapter.features();
     let (device, queue) = adapter
         .request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                features: features & wgpu::Features::TIMESTAMP_QUERY,
-                limits: Default::default(),
-            },
+            &wgpu::DeviceDescriptor::default(),
             None,
         )
         .await
         .unwrap();
-    let query_set = if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+    // TODO: re-enable timestamp queries
+    let query_set = if false && features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         Some(device.create_query_set(&wgpu::QuerySetDescriptor {
             count: 2,
             ty: wgpu::QueryType::Timestamp,
@@ -54,8 +51,8 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
     println!("shader compilation {:?}", start_instant.elapsed());
-    let input_f = &[1.0f32, 2.0f32];
-    let input: &[u8] = bytemuck::bytes_of(input_f);
+    let input_v = (0..256).map(|i| i as f32).collect::<Vec<_>>();
+    let input: &[u8] = bytemuck::cast_slice(&input_v);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: input,
@@ -105,6 +102,8 @@ async fn run() {
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
         entry_point: "main",
+        cache: None,
+        compilation_options: PipelineCompilationOptions::default(),
     });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -124,7 +123,7 @@ async fn run() {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(input_f.len() as u32, 1, 1);
+        cpass.dispatch_workgroups(input_v.len() as u32, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
@@ -142,14 +141,14 @@ async fn run() {
     let query_slice = query_staging_buf.slice(..);
     // Assume that both buffers become available at the same time. A more careful
     // approach would be to wait for both notifications to be sent.
-    let _query_future = query_slice.map_async(wgpu::MapMode::Read, |_| ());
+    query_slice.map_async(wgpu::MapMode::Read, |_| ());
     println!("pre-poll {:?}", std::time::Instant::now());
     device.poll(wgpu::Maintain::Wait);
     println!("post-poll {:?}", std::time::Instant::now());
     if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
         let data: &[f32] = bytemuck::cast_slice(data_raw);
-        println!("data: {:?}", &*data);
+        println!("data: {:?}", data);
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();

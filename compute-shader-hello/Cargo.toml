@@ -6,7 +6,7 @@ license = "MIT/Apache-2.0"
 edition = "2021"
 
 [dependencies]
-wgpu = "0.18"
+wgpu = "22.0.1"
 env_logger = "0.10.1"
 pollster = "0.3"
 futures-intrusive = "0.5"

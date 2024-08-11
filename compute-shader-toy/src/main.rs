@@ -16,18 +16,22 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
+use std::sync::Arc;
+
 use wgpu::util::DeviceExt;
-use wgpu::{BufferUsages, Extent3d, SamplerBindingType};
+use wgpu::{BufferUsages, Extent3d, PipelineCompilationOptions, SamplerBindingType};
 
 use winit::{
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::EventLoop,
     window::Window,
 };
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
+    let window = Arc::new(window);
+    let window_clone = window.clone();
     let instance = wgpu::Instance::new(Default::default());
-    let surface = unsafe { instance.create_surface(&window).unwrap() };
+    let surface = instance.create_surface(&window).unwrap();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: Default::default(),
@@ -46,12 +50,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let format = swapchain_capabilities.formats[0];
     let sc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: format,
+        format,
         width: size.width,
         height: size.height,
         present_mode: wgpu::PresentMode::Fifo,
         alpha_mode: swapchain_capabilities.alpha_modes[0],
         view_formats: vec![],
+        desired_maximum_frame_latency: 2,
     };
     surface.configure(&device, &sc);
 
@@ -97,16 +102,19 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             module: &copy_shader,
             entry_point: "vs_main",
             buffers: &[],
+            compilation_options: PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &copy_shader,
             entry_point: "fs_main",
             targets: &[Some(format.into())],
+            compilation_options: PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
+        cache: None,
     });
 
     let img = device.create_texture(&wgpu::TextureDescriptor {
@@ -174,6 +182,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
         entry_point: "main",
+        cache: None,
+        compilation_options: PipelineCompilationOptions::default(),
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -214,70 +224,74 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
     let start_time = std::time::Instant::now();
 
-    event_loop.run(move |event, _event_loop, control_flow| {
-        // TODO: this may be excessive polling. It really should be synchronized with
-        // swapchain presentation, but that's currently underbaked in wgpu.
-        *control_flow = ControlFlow::Poll;
-        match event {
-            Event::RedrawRequested(_) => {
-                let frame = surface
-                    .get_current_texture()
-                    .expect("error getting texture from swap chain");
+    event_loop
+        .run(move |event, target| {
+            if let Event::WindowEvent {
+                window_id: _,
+                event,
+            } = event
+            {
+                match event {
+                    WindowEvent::RedrawRequested => {
+                        let frame = surface
+                            .get_current_texture()
+                            .expect("error getting texture from swap chain");
 
-                let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
-                let config_data = [size.width, size.height, i_time.to_bits()];
-                let config_host = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: None,
-                    contents: bytemuck::bytes_of(&config_data),
-                    usage: BufferUsages::COPY_SRC,
-                });
-                let mut encoder = device.create_command_encoder(&Default::default());
-                encoder.copy_buffer_to_buffer(&config_host, 0, &config_dev, 0, CONFIG_SIZE);
-                {
-                    let mut cpass = encoder.begin_compute_pass(&Default::default());
-                    cpass.set_pipeline(&pipeline);
-                    cpass.set_bind_group(0, &bind_group, &[]);
-                    cpass.dispatch_workgroups(size.width / 16, size.height / 16, 1);
+                        let i_time: f32 = 0.5 + start_time.elapsed().as_micros() as f32 * 1e-6;
+                        let config_data = [size.width, size.height, i_time.to_bits()];
+                        let config_host =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: None,
+                                contents: bytemuck::bytes_of(&config_data),
+                                usage: BufferUsages::COPY_SRC,
+                            });
+                        let mut encoder = device.create_command_encoder(&Default::default());
+                        encoder.copy_buffer_to_buffer(&config_host, 0, &config_dev, 0, CONFIG_SIZE);
+                        {
+                            let mut cpass = encoder.begin_compute_pass(&Default::default());
+                            cpass.set_pipeline(&pipeline);
+                            cpass.set_bind_group(0, &bind_group, &[]);
+                            cpass.dispatch_workgroups(size.width / 16, size.height / 16, 1);
+                        }
+                        {
+                            let view = frame
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default());
+                            let mut rpass =
+                                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                    label: None,
+                                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                        view: &view,
+                                        resolve_target: None,
+                                        ops: wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                            store: wgpu::StoreOp::Store,
+                                        },
+                                    })],
+                                    depth_stencil_attachment: None,
+                                    timestamp_writes: None,
+                                    occlusion_query_set: None,
+                                });
+                            rpass.set_pipeline(&render_pipeline);
+                            rpass.set_bind_group(0, &copy_bind_group, &[]);
+                            rpass.draw(0..3, 0..2);
+                        }
+                        queue.submit(Some(encoder.finish()));
+                        frame.present();
+                        window_clone.request_redraw();
+                    }
+                    WindowEvent::CloseRequested => {
+                        target.exit();
+                    }
+                    _ => (),
                 }
-                {
-                    let view = frame
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: None,
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    rpass.set_pipeline(&render_pipeline);
-                    rpass.set_bind_group(0, &copy_bind_group, &[]);
-                    rpass.draw(0..3, 0..2);
-                }
-                queue.submit(Some(encoder.finish()));
-                frame.present();
             }
-            Event::MainEventsCleared => {
-                window.request_redraw();
-            }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            _ => (),
-        }
-    });
+        })
+        .unwrap();
 }
 
 fn main() {
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
     let window = Window::new(&event_loop).unwrap();
     window.set_resizable(false);
     pollster::block_on(run(event_loop, window));

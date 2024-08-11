@@ -7,8 +7,8 @@ description = "A simple compute shader example that draws in a window, based on 
 edition = "2021"
 
 [dependencies]
-wgpu = { version = "0.18" }
-winit = "0.28"
+wgpu = { version = "22.0.1" }
+winit = "0.29"
 pollster = "0.3"
 async-executor = "1.8"
 bytemuck = "1.14"
