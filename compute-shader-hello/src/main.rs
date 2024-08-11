@@ -23,7 +23,7 @@ use wgpu::util::DeviceExt;
 use bytemuck;
 
 async fn run() {
-    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
     let adapter = instance.request_adapter(&Default::default()).await.unwrap();
     let features = adapter.features();
     let (device, queue) = adapter
@@ -69,11 +69,17 @@ async fn run() {
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    // This works if the buffer is initialized, otherwise reads all 0, for some reason.
-    let query_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let query_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        contents: &[0; 16],
+        size: 16,
+        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::QUERY_RESOLVE,
+        mapped_at_creation: false,
+    });
+    let query_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -127,12 +133,13 @@ async fn run() {
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }
+    encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
     queue.submit(Some(encoder.finish()));
 
     let buf_slice = output_buf.slice(..);
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
     buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    let query_slice = query_buf.slice(..);
+    let query_slice = query_staging_buf.slice(..);
     // Assume that both buffers become available at the same time. A more careful
     // approach would be to wait for both notifications to be sent.
     let _query_future = query_slice.map_async(wgpu::MapMode::Read, |_| ());

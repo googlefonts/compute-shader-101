@@ -26,8 +26,8 @@ use winit::{
 };
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
-    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
-    let surface = unsafe { instance.create_surface(&window) };
+    let instance = wgpu::Instance::new(Default::default());
+    let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: Default::default(),
@@ -42,14 +42,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("error creating device");
     let size = window.inner_size();
-    let format = surface.get_supported_formats(&adapter)[0];
+    let swapchain_capabilities = surface.get_capabilities(&adapter);
+    let format = swapchain_capabilities.formats[0];
     let sc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: format,
         width: size.width,
         height: size.height,
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: surface.get_supported_alpha_modes(&adapter)[0],
+        alpha_mode: swapchain_capabilities.alpha_modes[0],
+        view_formats: vec![],
     };
     surface.configure(&device, &sc);
 
@@ -119,6 +121,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
     });
     let img_view = img.create_view(&Default::default());
 
@@ -211,7 +214,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
     let start_time = std::time::Instant::now();
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, _event_loop, control_flow| {
         // TODO: this may be excessive polling. It really should be synchronized with
         // swapchain presentation, but that's currently underbaked in wgpu.
         *control_flow = ControlFlow::Poll;
@@ -247,10 +250,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                                store: true,
+                                store: wgpu::StoreOp::Store,
                             },
                         })],
                         depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
                     });
                     rpass.set_pipeline(&render_pipeline);
                     rpass.set_bind_group(0, &copy_bind_group, &[]);
