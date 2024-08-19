@@ -14,17 +14,35 @@
 //
 // Also licensed under MIT license, at your choice.
 
-struct DataBuf {
-    data: array<f32>,
+struct Tile {
+    loc: Loc,
+    // TODO: actual tile representation, footprint is standin
+    footprint: u32,
+}
+
+struct Loc {
+    path_id: u32,
+    xy: u32, // two u16's packed
+}
+
+struct Count {
+    la: Loc,
+    fa: u32,
+    lb: Loc,
+    fb: u32,
+    cols: u32,
 }
 
 @group(0)
 @binding(0)
-var<storage, read_write> v_indices: DataBuf;
+var<storage> tiles: array<Tile>;
+
+@group(0) @binding(1)
+var<storage, read_write> counts: array<Count>;
 
 @compute
-@workgroup_size(1)
+@workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    // TODO: a more interesting computation than this.
-    v_indices.data[global_id.x] = v_indices.data[global_id.x] + 42.0;
+    let tile = tiles[global_id.x];
+    counts[global_id.x] = Count(tile.loc, tile.footprint, Loc(), 2, global_id.x);
 }

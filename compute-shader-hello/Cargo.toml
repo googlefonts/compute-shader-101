@@ -11,3 +11,4 @@ env_logger = "0.10.1"
 pollster = "0.3"
 futures-intrusive = "0.5"
 bytemuck = { version = "1.14", features = ["derive"] }
+rand = "0.8"
