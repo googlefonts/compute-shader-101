@@ -74,6 +74,46 @@ fn same_strip(a: Loc, b: Loc) -> bool {
     return a.path_id == b.path_id && (diff == 0 || diff == 1);
 }
 
+fn same_row(a: Loc, b: Loc) -> bool {
+    return a.path_id == b.path_id && (a.xy >> 16) == (b.xy >> 16);
+}
+
+fn combine_count(a: Count, b: Count) -> Count {
+    let breaks = u32(!loc_eq(a.la, a.lb))
+        + u32(!loc_eq(a.lb, b.la)) * 2
+        + u32(!loc_eq(b.la, b.lb)) * 4;
+    var cols = a.cols + b.cols;
+    if breaks == 3 || breaks == 7 {
+        cols += countOneBits(a.fb);
+    }
+    if breaks == 6 || breaks == 7 {
+        cols += countOneBits(b.fa);
+    }
+    if breaks == 5 {
+        cols += countOneBits(a.fb | b.fa);
+    }
+    var fa = a.fa;
+    if breaks == 0 || breaks == 4 {
+        fa |= b.fa;
+    }
+    var fb = b.fb;
+    if breaks == 0 || breaks == 1 {
+        fb |= a.fb;
+    }
+    var strips = a.strips + b.strips;
+    if !same_strip(a.lb, b.la) {
+        strips += 1u;
+    }
+    // TODO: if same strip but different segment, glue footprints together
+    // (only matters for reduction if not break, but we should probably
+    // find a way to exfiltrate into footprints array)
+    var delta = b.delta;
+    if same_row(a.lb, b.lb) {
+        delta += a.delta;
+    }
+    return Count(a.la, fa, b.lb, fb, cols, strips, delta);
+}
+
 @compute
 @workgroup_size(WG)
 fn main(
@@ -81,13 +121,13 @@ fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(workgroup_id) wg_id: vec3<u32>,
 ) {
+    let tile = tiles[global_id.x];
     if local_id.x == 0 {
         atomicStore(&sh_cols, 0u);
         atomicStore(&sh_strips, 0u);
         atomicStore(&sh_row_start, 0u);
     }
     workgroupBarrier();
-    let tile = tiles[global_id.x];
     // inclusive prefix sum of histo
     var sum = expand_footprint(tile.footprint);
     var start = 0u;
@@ -102,7 +142,7 @@ fn main(
             }
             // TODO: if same strip but different segment, extend fp toward lsb
         }
-        if prev_tile.loc.path_id != tile.loc.path_id || (prev_tile.loc.xy >> 16) != (tile.loc.xy >> 16) {
+        if !same_row(prev_tile.loc, tile.loc) {
             atomicMax(&sh_row_start, local_id.x);
         }
     }
