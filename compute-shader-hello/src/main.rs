@@ -31,8 +31,8 @@ struct Footprint(u32);
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Pod, Zeroable)]
 struct Loc {
     path_id: u32,
-    y: u16,
     x: u16,
+    y: u16,
 }
 
 #[repr(C)]
@@ -42,6 +42,7 @@ struct Tile {
     // A real tile would have a line segment, and we'd derive a footprint from it,
     // but we're just interested in strip allocation.
     footprint: Footprint,
+    delta: i32,
 }
 
 #[repr(C)]
@@ -52,6 +53,8 @@ struct Count {
     lb: Loc,
     fb: Footprint,
     cols: u32,
+    strips: u32,
+    delta: i32,
 }
 
 async fn run() {
@@ -280,7 +283,8 @@ fn gen_tiles(n_strips: usize) -> Vec<Tile> {
                     lsb
                 };
                 let footprint = Footprint(this_fp as u32);
-                let tile = Tile { loc, footprint };
+                let delta = rng.gen_range(-1..=1);
+                let tile = Tile { loc, footprint, delta };
                 v.push(tile);
             }
             x += 1;
