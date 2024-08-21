@@ -92,6 +92,7 @@ async fn run() {
             | wgpu::BufferUsages::COPY_SRC,
     });
     let output_byte_len = (N * std::mem::size_of::<Count>()) as u64;
+    let footprint_byte_len = (tiles.len() * std::mem::size_of::<u32>()) as u64;
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("output_buf"),
         size: output_byte_len,
@@ -101,6 +102,18 @@ async fn run() {
     let output_staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("output_staging"),
         size: output_byte_len,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let footprint_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("footprint_buf"),
+        size: footprint_byte_len,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let footprint_staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("footprint_staging"),
+        size: footprint_byte_len,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -140,6 +153,16 @@ async fn run() {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -168,6 +191,10 @@ async fn run() {
                 binding: 1,
                 resource: output_buf.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: footprint_buf.as_entire_binding(),
+            },
         ],
     });
 
@@ -176,17 +203,18 @@ async fn run() {
         encoder.write_timestamp(query_set, 0);
     }
     // TODO: launch multiple workgroups
-    let n_wg = 1;
+    let n_wg = tiles.len() / 256;
     {
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.dispatch_workgroups(n_wg, 1, 1);
+        cpass.dispatch_workgroups(n_wg as u32, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
     }
     encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging, 0, output_byte_len);
+    encoder.copy_buffer_to_buffer(&footprint_buf, 0, &footprint_staging, 0, footprint_byte_len);
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }
@@ -206,7 +234,9 @@ async fn run() {
     if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
         let data: &[Count] = bytemuck::cast_slice(data_raw);
-        println!("data: {:?}", data);
+        for i in 0..n_wg {
+            println!("{i}: {:?}", data[i]);
+        }
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
         let ts_period = queue.get_timestamp_period();
