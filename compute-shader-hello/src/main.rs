@@ -48,13 +48,13 @@ struct Tile {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Count {
-    la: Loc,
     fa: Footprint,
-    lb: Loc,
     fb: Footprint,
     cols: u32,
     strips: u32,
     delta: i32,
+    la: Loc,
+    lb: Loc,
 }
 
 async fn run() {
@@ -177,7 +177,7 @@ async fn run() {
         label: None,
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
-        entry_point: "main",
+        entry_point: "count_reduce",
         cache: None,
         compilation_options: PipelineCompilationOptions::default(),
     });

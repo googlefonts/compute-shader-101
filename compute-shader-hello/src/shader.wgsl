@@ -28,13 +28,31 @@ struct Loc {
 
 struct Count {
     // An observation: loc could be fetched from tile
-    la: Loc,
     fa: u32,
-    lb: Loc,
     fb: u32,
     cols: u32,
     strips: u32,
     delta: i32,
+    la: Loc,
+    lb: Loc,
+}
+
+// same struct as Count but missing loc
+// could nest the structs
+struct MiniCount {
+    fa: u32,
+    fb: u32,
+    cols: u32,
+    strips: u32,
+    delta: i32,
+}
+
+struct Strip {
+    xy: u32,
+    col: u32,
+    // maybe don't need, look at start of next strip
+    width: u32,
+    sparse_width: u32,
 }
 
 @group(0) @binding(0)
@@ -78,45 +96,63 @@ fn same_row(a: Loc, b: Loc) -> bool {
     return a.path_id == b.path_id && (a.xy >> 16) == (b.xy >> 16);
 }
 
-fn combine_count(a: Count, b: Count) -> Count {
-    let breaks = u32(!loc_eq(a.la, a.lb))
-        + u32(!loc_eq(a.lb, b.la)) * 2
-        + u32(!loc_eq(b.la, b.lb)) * 4;
+fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, blb: Loc) -> MiniCount {
+    let breaks = u32(!loc_eq(ala, alb))
+        + u32(!loc_eq(alb, bla)) * 2
+        + u32(!loc_eq(bla, blb)) * 4;
+    var fa = a.fa;
+    var afb = a.fb;
+    var bfa = b.fa;
+    var fb = b.fb;
+    var strips = a.strips + b.strips;
+    if !same_strip(alb, bla) {
+        strips += 1u;
+    } else if (breaks & 2) != 0 {
+        // same strip but different segment; glue footprints together
+        afb = 16 - (afb & u32(-i32(afb)));
+        if breaks == 2 || breaks == 6 {
+            fa = afb;
+        }
+        bfa = (2u << (firstLeadingBit(bfa))) - 1;
+        if breaks == 2 || breaks == 3 {
+            fb = bfa;
+        }
+    }
     var cols = a.cols + b.cols;
     if breaks == 3 || breaks == 7 {
-        cols += countOneBits(a.fb);
+        cols += countOneBits(afb);
     }
     if breaks == 6 || breaks == 7 {
-        cols += countOneBits(b.fa);
+        cols += countOneBits(bfa);
     }
     if breaks == 5 {
-        cols += countOneBits(a.fb | b.fa);
+        cols += countOneBits(afb | bfa);
     }
-    var fa = a.fa;
     if breaks == 0 || breaks == 4 {
-        fa |= b.fa;
+        fa |= bfa;
     }
-    var fb = b.fb;
     if breaks == 0 || breaks == 1 {
-        fb |= a.fb;
+        fb |= afb;
     }
-    var strips = a.strips + b.strips;
-    if !same_strip(a.lb, b.la) {
-        strips += 1u;
-    }
-    // TODO: if same strip but different segment, glue footprints together
-    // (only matters for reduction if not break, but we should probably
-    // find a way to exfiltrate into footprints array)
     var delta = b.delta;
-    if same_row(a.lb, b.lb) {
+    if same_row(alb, blb) {
         delta += a.delta;
     }
-    return Count(a.la, fa, b.lb, fb, cols, strips, delta);
+    return MiniCount(fa, fb, cols, strips, delta);
 }
+
+// spec for reduce:
+// each partition generates count monoid
+// only the partition is considered; boundaries at partition
+// boundaries are expected to be resolved in scan (where logic
+// is cheaper)
+//
+// currently, we also store footprints of segments where the
+// boundaries are within the partition
 
 @compute
 @workgroup_size(WG)
-fn main(
+fn count_reduce(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(workgroup_id) wg_id: vec3<u32>,
@@ -129,23 +165,35 @@ fn main(
     }
     workgroupBarrier();
     // inclusive prefix sum of histo
-    var sum = expand_footprint(tile.footprint);
     var start = 0u;
     // Note: this matches slice_alloc, but another viable choice is to
     // use global_id; this would catch starts at beginning of partition
+    var fp = tile.footprint;
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
         if !loc_eq(prev_tile.loc, tile.loc) {
             start = local_id.x;
             if !same_strip(prev_tile.loc, tile.loc) {
                 atomicAdd(&sh_strips, 1u);
+            } else {
+                // same strip but different segment, extend fp toward lsb
+                fp = (2u << (firstLeadingBit(fp))) - 1;
             }
-            // TODO: if same strip but different segment, extend fp toward lsb
         }
         if !same_row(prev_tile.loc, tile.loc) {
             atomicMax(&sh_row_start, local_id.x);
         }
     }
+    var is_end = false;
+    if local_id.x < WG - 1 {
+        let next_tile = tiles[global_id.x + 1];
+        is_end = !loc_eq(tile.loc, next_tile.loc);
+        if same_strip(tile.loc, next_tile.loc) {
+            // same strip but different segment, extend fp toward msb
+            fp = 16 - (fp & u32(-i32(fp)));
+        }
+    }
+    var sum = expand_footprint(fp);
     var delta = tile.delta;
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_histo[local_id.x] = sum;
@@ -180,18 +228,14 @@ fn main(
             delta -= sh_delta[row_start - 1];
         }
         counts[wg_id.x].delta = delta;
-    } else {
-        if !loc_eq(tile.loc, tiles[global_id.x + 1].loc) {
-            // TODO: if same strip extend fp toward msb
-            // last tile in segment
-            if start == 0 {
-                counts[wg_id.x].fa = from_expanded(sum);
-            } else {
-                let histo = sum - sh_histo[start - 1];
-                let fp = from_expanded(histo);
-                footprints[wg_id.x * WG + start] = fp;
-                atomicAdd(&sh_cols, countOneBits(fp));
-            }
+    } else if is_end {
+        if start == 0 {
+            counts[wg_id.x].fa = from_expanded(sum);
+        } else {
+            let histo = sum - sh_histo[start - 1];
+            let fp = from_expanded(histo);
+            footprints[wg_id.x * WG + start] = fp;
+            atomicAdd(&sh_cols, countOneBits(fp));
         }
     }
     workgroupBarrier();
@@ -199,5 +243,94 @@ fn main(
         counts[wg_id.x].la = tile.loc;
         counts[wg_id.x].cols = atomicLoad(&sh_cols);
         counts[wg_id.x].strips = atomicLoad(&sh_strips);
+    }
+}
+
+var<workgroup> sh_count: array<MiniCount, WG>;
+
+@compute @workgroup_size(WG)
+fn count_scan(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+) {
+    // TODO: pull n_tiles from config, gate input and output
+    let c = counts[global_id.x];
+    var fa = c.fa;
+    var count = MiniCount(c.fa, c.fb, c.cols, c.strips, c.delta);
+    var bla = c.la;
+    let blb = c.lb;
+    for (var i = 0u; i < firstTrailingBit(WG); i++) {
+        sh_count[local_id.x] = count;
+        // sh_count[j] has (j + 1).saturating_sub(2^i)..j + 1
+        workgroupBarrier();
+        if local_id.x >= 1u << i {
+            let offset = (2u << i) - 1;
+            let ala = counts[max(global_id.x, offset) - offset].la;
+            let alb = counts[global_id.x - (1u << i)].lb;
+            let ix = local_id.x - (1u << i);
+            count = combine_minicount(sh_count[ix], count, ala, alb, bla, blb);
+            bla = ala;
+        }
+        workgroupBarrier();
+    }
+    sh_count[local_id.x] = count;
+    workgroupBarrier();
+    if local_id.x > 0 {
+        fa |= sh_count[local_id.x - 1].fb;
+    }
+    var cols = countOneBits(fa);
+    var delta = 0;
+    if local_id.x > 0 {
+        cols += sh_count[local_id.x - 1].cols;
+        if same_row(counts[global_id.x - 1].lb, bla) {
+            delta = sh_count[local_id.x - 1].delta;
+        }
+    }
+    counts[global_id.x].cols = cols;
+    counts[global_id.x].delta = delta;
+    // TODO: store strip count
+}
+
+// spec for scan:
+// cols is the start for the first segment boundary within the partition
+// note: if there is no boundary, cols is irrelevant; merge won't store
+// any columns, that will all be done within the reduction fixup
+
+// strips = exclusive prefix sum, but need to figure out behavior when
+// a strip boundary coincides with a partition boundary
+
+var<workgroup> sh_strip_count: array<u32, WG>;
+
+// This just outputs strips, but will be combined with actual rendering
+@compute @workgroup_size(WG)
+fn mk_strips(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    let tile = tiles[global_id.x];
+    var is_strip_start = false;
+    var is_seg_start = false;
+    if global_id.x > 0 {
+        let prev_tile = tiles[global_id.x - 1];
+        if !same_strip(prev_tile.loc, tile.loc) {
+            is_strip_start = true;
+        }
+        is_seg_start = loc_eq(prev_tile.loc, tile.loc);
+    }
+    var strip_count = u32(is_strip_start);
+    // it's possible we should store partial results retained
+    // from reduction step, but here we redo the computation,
+    // mostly for memory reasons
+    var sum = expand_footprint(tile.footprint);
+    for (var i = 0u; i < firstTrailingBit(WG); i++) {
+        sh_strip_count[local_id.x] = strip_count;
+        sh_histo[local_id.x] = sum;
+        workgroupBarrier();
+        if local_id.x >= (1u << i) {
+            strip_count += sh_strip_count[local_id.x - (1u << i)];
+            sum += sh_histo[local_id.x - (1u << i)];
+        }
+        workgroupBarrier();
     }
 }
