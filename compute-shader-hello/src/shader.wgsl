@@ -83,6 +83,10 @@ fn from_expanded(histo: u32) -> u32 {
     return (2u << (firstLeadingBit(histo) / 8u)) - (1u << (firstTrailingBit(histo) / 8u));
 }
 
+fn count_footprint(fp: u32) -> u32 {
+    return 1 + firstLeadingBit(fp) - firstTrailingBit(fp);
+}
+
 fn loc_eq(a: Loc, b: Loc) -> bool {
     return a.path_id == b.path_id && a.xy == b.xy;
 }
@@ -107,26 +111,30 @@ fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, b
     var strips = a.strips + b.strips;
     if !same_strip(alb, bla) {
         strips += 1u;
+        // strip_start = true
     } else if (breaks & 2) != 0 {
+        // strip_start = false
         // same strip but different segment; glue footprints together
-        afb = 16 - (afb & u32(-i32(afb)));
-        if breaks == 2 || breaks == 6 {
+        afb |= 8u;
+        if (breaks & 1) == 0 {
             fa = afb;
         }
-        bfa = (2u << (firstLeadingBit(bfa))) - 1;
-        if breaks == 2 || breaks == 3 {
+        bfa |= 1u;
+        if (breaks & 4) == 0 {
             fb = bfa;
         }
     }
+    // else strip_start = a.strip_start
+    // if breaks&4, strip_start = b.strip_start
     var cols = a.cols + b.cols;
     if breaks == 3 || breaks == 7 {
-        cols += countOneBits(afb);
+        cols += count_footprint(afb);
     }
     if breaks == 6 || breaks == 7 {
-        cols += countOneBits(bfa);
+        cols += count_footprint(bfa);
     }
     if breaks == 5 {
-        cols += countOneBits(afb | bfa);
+        cols += count_footprint(afb | bfa);
     }
     if breaks == 0 || breaks == 4 {
         fa |= bfa;
@@ -177,7 +185,7 @@ fn count_reduce(
                 atomicAdd(&sh_strips, 1u);
             } else {
                 // same strip but different segment, extend fp toward lsb
-                fp = (2u << (firstLeadingBit(fp))) - 1;
+                fp |= 1u;
             }
         }
         if !same_row(prev_tile.loc, tile.loc) {
@@ -190,7 +198,7 @@ fn count_reduce(
         is_end = !loc_eq(tile.loc, next_tile.loc);
         if same_strip(tile.loc, next_tile.loc) {
             // same strip but different segment, extend fp toward msb
-            fp = 16 - (fp & u32(-i32(fp)));
+            fp |= 8u;
         }
     }
     var sum = expand_footprint(fp);
@@ -235,7 +243,7 @@ fn count_reduce(
             let histo = sum - sh_histo[start - 1];
             let fp = from_expanded(histo);
             footprints[wg_id.x * WG + start] = fp;
-            atomicAdd(&sh_cols, countOneBits(fp));
+            atomicAdd(&sh_cols, count_footprint(fp));
         }
     }
     workgroupBarrier();
