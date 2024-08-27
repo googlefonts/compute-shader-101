@@ -53,8 +53,19 @@ struct Count {
     cols: u32,
     strips: u32,
     delta: i32,
+    strip_start: u32,
     la: Loc,
     lb: Loc,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct Strip {
+    xy: u32,
+    col: u32,
+    // maybe don't need, look at start of next strip
+    width: u32,
+    sparse_width: u32,
 }
 
 async fn run() {
@@ -95,7 +106,7 @@ async fn run() {
             | wgpu::BufferUsages::COPY_SRC,
     });
     let output_byte_len = (N * std::mem::size_of::<Count>()) as u64;
-    let footprint_byte_len = (tiles.len() * std::mem::size_of::<u32>()) as u64;
+    let strip_byte_len = 1 << 16;
     let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("output_buf"),
         size: output_byte_len,
@@ -108,15 +119,15 @@ async fn run() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let footprint_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("footprint_buf"),
-        size: footprint_byte_len,
+    let strip_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("strip_buf"),
+        size: strip_byte_len,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    let footprint_staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("footprint_staging"),
-        size: footprint_byte_len,
+    let strip_staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("strip_staging"),
+        size: strip_byte_len,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -181,6 +192,22 @@ async fn run() {
         cache: None,
         compilation_options: PipelineCompilationOptions::default(),
     });
+    let scan_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&compute_pipeline_layout),
+        module: &cs_module,
+        entry_point: "count_scan",
+        cache: None,
+        compilation_options: PipelineCompilationOptions::default(),
+    });
+    let mk_strip_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&compute_pipeline_layout),
+        module: &cs_module,
+        entry_point: "mk_strips",
+        cache: None,
+        compilation_options: PipelineCompilationOptions::default(),
+    });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -196,7 +223,7 @@ async fn run() {
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: footprint_buf.as_entire_binding(),
+                resource: strip_buf.as_entire_binding(),
             },
         ],
     });
@@ -212,19 +239,23 @@ async fn run() {
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
         cpass.dispatch_workgroups(n_wg as u32, 1, 1);
+        cpass.set_pipeline(&scan_pipeline);
+        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_pipeline(&mk_strip_pipeline);
+        cpass.dispatch_workgroups(n_wg as u32, 1, 1);
     }
     if let Some(query_set) = &query_set {
         encoder.write_timestamp(query_set, 1);
     }
     encoder.copy_buffer_to_buffer(&output_buf, 0, &output_staging, 0, output_byte_len);
-    encoder.copy_buffer_to_buffer(&footprint_buf, 0, &footprint_staging, 0, footprint_byte_len);
+    encoder.copy_buffer_to_buffer(&strip_buf, 0, &strip_staging, 0, strip_byte_len);
     if let Some(query_set) = &query_set {
         encoder.resolve_query_set(query_set, 0..2, &query_buf, 0);
     }
     encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
     queue.submit(Some(encoder.finish()));
 
-    let buf_slice = output_staging.slice(..);
+    let buf_slice = strip_staging.slice(..);
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
     buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let query_slice = query_staging_buf.slice(..);
@@ -236,9 +267,9 @@ async fn run() {
     println!("post-poll {:?}", std::time::Instant::now());
     if let Some(Ok(())) = receiver.receive().await {
         let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[Count] = bytemuck::cast_slice(data_raw);
-        for i in 0..n_wg {
-            println!("{i}: {:?}", data[i]);
+        let data: &[Strip] = bytemuck::cast_slice(data_raw);
+        for i in 0..64 {
+            println!("{i}: {:x?}", data[i]);
         }
     }
     if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
@@ -289,6 +320,7 @@ fn gen_tiles(n_strips: usize) -> Vec<Tile> {
             }
             x += 1;
         }
+        x += rng.gen_range(0..=1);
         if rng.gen::<f64>() < 1e-2 {
             y += 1;
             x = 0;

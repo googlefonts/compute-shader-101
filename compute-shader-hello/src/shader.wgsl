@@ -33,6 +33,7 @@ struct Count {
     cols: u32,
     strips: u32,
     delta: i32,
+    strip_start: u32,
     la: Loc,
     lb: Loc,
 }
@@ -45,6 +46,7 @@ struct MiniCount {
     cols: u32,
     strips: u32,
     delta: i32,
+    strip_start: u32,
 }
 
 struct Strip {
@@ -62,7 +64,7 @@ var<storage> tiles: array<Tile>;
 var<storage, read_write> counts: array<Count>;
 
 @group(0) @binding(2)
-var<storage, read_write> footprints: array<u32>;
+var<storage, read_write> strips: array<Strip>;
 
 const WG = 256u;
 
@@ -70,9 +72,11 @@ var<workgroup> sh_histo: array<u32, WG>;
 var<workgroup> sh_start: array<u32, WG>;
 var<workgroup> sh_delta: array<i32, WG>;
 // We use atomics for simplicity, but could do monoid reduction
-var<workgroup> sh_cols: atomic<u32>;
+var<workgroup> sh_col_count: atomic<u32>;
 var<workgroup> sh_strips: atomic<u32>;
 var<workgroup> sh_row_start: atomic<u32>;
+
+var<workgroup> sh_cols: array<u32, WG>;
 
 fn expand_footprint(fp: u32) -> u32 {
     return (fp * 0x204081) & 0x1010101;
@@ -146,7 +150,8 @@ fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, b
     if same_row(alb, blb) {
         delta += a.delta;
     }
-    return MiniCount(fa, fb, cols, strips, delta);
+    let strip_start = max(a.strip_start, b.strip_start);
+    return MiniCount(fa, fb, cols, strips, delta, strip_start);
 }
 
 // spec for reduce:
@@ -167,21 +172,23 @@ fn count_reduce(
 ) {
     let tile = tiles[global_id.x];
     if local_id.x == 0 {
-        atomicStore(&sh_cols, 0u);
+        atomicStore(&sh_col_count, 0u);
         atomicStore(&sh_strips, 0u);
         atomicStore(&sh_row_start, 0u);
     }
     workgroupBarrier();
-    // inclusive prefix sum of histo
-    var start = 0u;
+    // Clever encoding: this the index of the start of the segment * 2,
+    // plus 1 if the segment start is also a strip boundary
+    var start_s = 0u;
     // Note: this matches slice_alloc, but another viable choice is to
     // use global_id; this would catch starts at beginning of partition
     var fp = tile.footprint;
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
         if !loc_eq(prev_tile.loc, tile.loc) {
-            start = local_id.x;
+            start_s = local_id.x * 2;
             if !same_strip(prev_tile.loc, tile.loc) {
+                start_s += 1u;
                 atomicAdd(&sh_strips, 1u);
             } else {
                 // same strip but different segment, extend fp toward lsb
@@ -201,16 +208,17 @@ fn count_reduce(
             fp |= 8u;
         }
     }
+    // inclusive prefix sum of histo
     var sum = expand_footprint(fp);
     var delta = tile.delta;
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_histo[local_id.x] = sum;
-        sh_start[local_id.x] = start;
+        sh_start[local_id.x] = start_s;
         sh_delta[local_id.x] = delta;
         workgroupBarrier();
         if local_id.x >= (1u << i) {
             sum += sh_histo[local_id.x - (1u << i)];
-            start = max(start, sh_start[local_id.x - (1u << i)]);
+            start_s = max(start_s, sh_start[local_id.x - (1u << i)]);
             delta += sh_delta[local_id.x - (1u << i)];
         }
         workgroupBarrier();
@@ -218,8 +226,10 @@ fn count_reduce(
     sh_histo[local_id.x] = sum;
     sh_delta[local_id.x] = delta;
     // don't need to store sh_start
+    let start = start_s / 2u;
     workgroupBarrier();
     if local_id.x == WG - 1 {
+        counts[wg_id.x].strip_start = start_s;
         let first = sh_histo[max(start, 1u) - 1];
         var last_histo = sum - first;
         if start == 0 {
@@ -242,14 +252,13 @@ fn count_reduce(
         } else {
             let histo = sum - sh_histo[start - 1];
             let fp = from_expanded(histo);
-            footprints[wg_id.x * WG + start] = fp;
-            atomicAdd(&sh_cols, count_footprint(fp));
+            atomicAdd(&sh_col_count, count_footprint(fp));
         }
     }
     workgroupBarrier();
     if local_id.x == 0 {
         counts[wg_id.x].la = tile.loc;
-        counts[wg_id.x].cols = atomicLoad(&sh_cols);
+        counts[wg_id.x].cols = atomicLoad(&sh_col_count);
         counts[wg_id.x].strips = atomicLoad(&sh_strips);
     }
 }
@@ -264,7 +273,11 @@ fn count_scan(
     // TODO: pull n_tiles from config, gate input and output
     let c = counts[global_id.x];
     var fa = c.fa;
-    var count = MiniCount(c.fa, c.fb, c.cols, c.strips, c.delta);
+    var strip_start = c.strip_start;
+    if strip_start != 0 {
+        strip_start += global_id.x & ~(WG - 1);
+    }
+    var count = MiniCount(c.fa, c.fb, c.cols, c.strips, c.delta, c.strip_start);
     var bla = c.la;
     let blb = c.lb;
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
@@ -286,17 +299,20 @@ fn count_scan(
     if local_id.x > 0 {
         fa |= sh_count[local_id.x - 1].fb;
     }
-    var cols = countOneBits(fa);
+    var cols = count_footprint(fa);
     var delta = 0;
+    var strips = 0u;
     if local_id.x > 0 {
         cols += sh_count[local_id.x - 1].cols;
         if same_row(counts[global_id.x - 1].lb, bla) {
             delta = sh_count[local_id.x - 1].delta;
         }
+        strips = sh_count[local_id.x - 1].strips;
     }
     counts[global_id.x].cols = cols;
     counts[global_id.x].delta = delta;
-    // TODO: store strip count
+    // TODO: adjust strip count for boundaries
+    counts[global_id.x].strips = strips;
 }
 
 // spec for scan:
@@ -319,26 +335,72 @@ fn mk_strips(
     let tile = tiles[global_id.x];
     var is_strip_start = false;
     var is_seg_start = false;
-    if global_id.x > 0 {
+    // Note: could be global_ix, which would see boundaries at partition start
+    if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
         if !same_strip(prev_tile.loc, tile.loc) {
             is_strip_start = true;
         }
-        is_seg_start = loc_eq(prev_tile.loc, tile.loc);
+        is_seg_start = !loc_eq(prev_tile.loc, tile.loc);
     }
     var strip_count = u32(is_strip_start);
-    // it's possible we should store partial results retained
-    // from reduction step, but here we redo the computation,
-    // mostly for memory reasons
+    var start_s = select(0u, local_id.x * 2 + strip_count, is_seg_start);
     var sum = expand_footprint(tile.footprint);
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_strip_count[local_id.x] = strip_count;
         sh_histo[local_id.x] = sum;
+        sh_start[local_id.x] = start_s;
         workgroupBarrier();
         if local_id.x >= (1u << i) {
             strip_count += sh_strip_count[local_id.x - (1u << i)];
             sum += sh_histo[local_id.x - (1u << i)];
+            start_s = max(start_s, sh_start[local_id.x - (1u << i)]);
         }
         workgroupBarrier();
+    }
+    strips[global_id.x].width = sum;
+    strips[global_id.x].sparse_width = start_s;
+    strips[global_id.x].sparse_width = counts[local_id.x].strips;
+    sh_histo[local_id.x] = sum;
+    workgroupBarrier();
+    var is_end = false;
+    var cols_in = 0u;
+    if local_id.x < WG - 1 {
+        let next_tile = tiles[global_id.x + 1];
+        is_end = !loc_eq(tile.loc, next_tile.loc);
+        if start_s != 0 {
+            let histo = sum - sh_histo[start_s / 2 - 1];
+            var fp = from_expanded(histo);
+            if (start_s & 1) != 0 {
+                fp |= 1u;
+            }
+            if same_strip(tile.loc, next_tile.loc) {
+                fp |= 8u;
+            }
+            cols_in = count_footprint(fp);
+        }
+    }
+    // at the last tile of a complete segment, cols_in contains the column count
+    var cols = cols_in;
+    for (var i = 0u; i < firstTrailingBit(WG); i++) {
+        sh_cols[local_id.x] = cols;
+        workgroupBarrier();
+        if local_id.x >= (1u << i) {
+            cols += sh_cols[local_id.x - (1u << i)];
+        }
+        workgroupBarrier();
+    }
+    if local_id.x < WG - 1 {
+        if is_end && (start_s & 1) != 0 {
+            // end of first segment of strip, output strip start
+            let strip_ix = counts[wg_id.x].strips + strip_count;
+            let histo = sum - sh_histo[(start_s / 2) - 1];
+            let xy = tile.loc.xy * 4 + firstTrailingBit(histo) / 8;
+            strips[strip_ix].xy = xy;
+            let col = counts[wg_id.x].cols + cols - cols_in;
+            // store start column
+            // note: it would also make sense to store at strip end
+            strips[strip_ix].col = col;
+        }
     }
 }
