@@ -61,7 +61,7 @@ struct Count {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Strip {
-    xy: u32,
+    xy: u32, // this could be u16's on the Rust side
     col: u32,
     // maybe don't need, look at start of next strip
     width: u32,
@@ -97,6 +97,10 @@ async fn run() {
     const N: usize = 256;
     //let input_v = (0..256).map(|i| i as f32).collect::<Vec<_>>();
     let tiles = gen_tiles(256);
+    let strips = mk_strips(&tiles);
+    for strip in strips.iter().take(32) {
+        println!("{strip:x?}");
+    }
     let input: &[u8] = bytemuck::cast_slice(&tiles);
     let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("input_buf"),
@@ -255,8 +259,10 @@ async fn run() {
     encoder.copy_buffer_to_buffer(&query_buf, 0, &query_staging_buf, 0, 16);
     queue.submit(Some(encoder.finish()));
 
+    let count_slice = output_staging.slice(..);
     let buf_slice = strip_staging.slice(..);
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    count_slice.map_async(wgpu::MapMode::Read, |_| ());
     buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let query_slice = query_staging_buf.slice(..);
     // Assume that both buffers become available at the same time. A more careful
@@ -266,8 +272,13 @@ async fn run() {
     device.poll(wgpu::Maintain::Wait);
     println!("post-poll {:?}", std::time::Instant::now());
     if let Some(Ok(())) = receiver.receive().await {
-        let data_raw = &*buf_slice.get_mapped_range();
-        let data: &[Strip] = bytemuck::cast_slice(data_raw);
+        let count_raw = count_slice.get_mapped_range();
+        let count_data: &[Count] = bytemuck::cast_slice(&count_raw);
+        for i in 0..n_wg {
+            println!("{i}: {:?}", count_data[i]);
+        }
+        let data_raw = buf_slice.get_mapped_range();
+        let data: &[Strip] = bytemuck::cast_slice(&data_raw);
         for i in 0..64 {
             println!("{i}: {:x?}", data[i]);
         }
@@ -327,6 +338,50 @@ fn gen_tiles(n_strips: usize) -> Vec<Tile> {
         }
     }
     v
+}
+
+impl Loc {
+    fn same_strip(&self, other: &Self) -> bool {
+        self.same_row(other) && (other.x - self.x) / 2 == 0
+    }
+
+    fn same_row(&self, other: &Self) -> bool {
+        self.path_id == other.path_id && self.y == other.y
+    }
+}
+
+/// Make strips from tiles.
+///
+/// This is the CPU implementation of tile allocation, useful mostly for
+/// validating the GPU implementation. It can likely be adapted to a CPU
+/// shader.
+fn mk_strips(tiles: &[Tile]) -> Vec<Strip> {
+    let mut strips = vec![];
+    let mut strip_start = true;
+    let mut cols = 0;
+    let mut prev_tile = &tiles[0];
+    let mut fp = prev_tile.footprint.0;
+    for tile in &tiles[1..] {
+        if prev_tile.loc != tile.loc {
+            let same_strip = prev_tile.loc.same_strip(&tile.loc);
+            if same_strip {
+                fp |= 8;
+            }
+            if strip_start {
+                let xy = (1 << 18) * prev_tile.loc.y as u32 + 4 * prev_tile.loc.x as u32 + fp.trailing_zeros();
+                let strip = Strip { xy, col: cols, width: 0, sparse_width: 0 };
+                strips.push(strip);
+            }
+            let col_count = 32 - (fp.leading_zeros() + fp.trailing_zeros());
+            cols += col_count;
+            fp = if same_strip { 1 } else { 0 };
+            strip_start = !same_strip;
+        }
+        fp |= tile.footprint.0;
+        //println!("cols = {cols}, fp = {fp}");
+        prev_tile = tile;
+    }
+    strips
 }
 
 fn main() {

@@ -96,8 +96,7 @@ fn loc_eq(a: Loc, b: Loc) -> bool {
 }
 
 fn same_strip(a: Loc, b: Loc) -> bool {
-    let diff = b.xy - a.xy;
-    return a.path_id == b.path_id && (diff == 0 || diff == 1);
+    return a.path_id == b.path_id && b.xy - a.xy <= 1;
 }
 
 fn same_row(a: Loc, b: Loc) -> bool {
@@ -338,9 +337,7 @@ fn mk_strips(
     // Note: could be global_ix, which would see boundaries at partition start
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
-        if !same_strip(prev_tile.loc, tile.loc) {
-            is_strip_start = true;
-        }
+        is_strip_start = !same_strip(prev_tile.loc, tile.loc);
         is_seg_start = !loc_eq(prev_tile.loc, tile.loc);
     }
     var strip_count = u32(is_strip_start);
@@ -358,6 +355,7 @@ fn mk_strips(
         }
         workgroupBarrier();
     }
+    // debug info; remove
     strips[global_id.x].width = sum;
     strips[global_id.x].sparse_width = start_s;
     strips[global_id.x].sparse_width = counts[local_id.x].strips;
@@ -368,10 +366,10 @@ fn mk_strips(
     if local_id.x < WG - 1 {
         let next_tile = tiles[global_id.x + 1];
         is_end = !loc_eq(tile.loc, next_tile.loc);
-        if start_s != 0 {
+        if is_end && start_s != 0 {
             let histo = sum - sh_histo[start_s / 2 - 1];
             var fp = from_expanded(histo);
-            if (start_s & 1) != 0 {
+            if (start_s & 1) == 0 {
                 fp |= 1u;
             }
             if same_strip(tile.loc, next_tile.loc) {
@@ -390,6 +388,7 @@ fn mk_strips(
         }
         workgroupBarrier();
     }
+    // cols is inclusive prefix sum of column counts
     if local_id.x < WG - 1 {
         if is_end && (start_s & 1) != 0 {
             // end of first segment of strip, output strip start
