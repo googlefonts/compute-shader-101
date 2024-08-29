@@ -114,9 +114,7 @@ fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, b
     var strips = a.strips + b.strips;
     if !same_strip(alb, bla) {
         strips += 1u;
-        // strip_start = true
     } else if (breaks & 2) != 0 {
-        // strip_start = false
         // same strip but different segment; glue footprints together
         afb |= 8u;
         if (breaks & 1) == 0 {
@@ -127,8 +125,6 @@ fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, b
             fb = bfa;
         }
     }
-    // else strip_start = a.strip_start
-    // if breaks&4, strip_start = b.strip_start
     var cols = a.cols + b.cols;
     if breaks == 3 || breaks == 7 {
         cols += count_footprint(afb);
@@ -202,7 +198,7 @@ fn count_reduce(
     if local_id.x < WG - 1 {
         let next_tile = tiles[global_id.x + 1];
         is_end = !loc_eq(tile.loc, next_tile.loc);
-        if same_strip(tile.loc, next_tile.loc) {
+        if is_end && same_strip(tile.loc, next_tile.loc) {
             // same strip but different segment, extend fp toward msb
             fp |= 8u;
         }
@@ -274,10 +270,11 @@ fn count_scan(
     var fa = c.fa;
     var strip_start = c.strip_start;
     if strip_start != 0 {
-        strip_start += global_id.x & ~(WG - 1);
+        strip_start += global_id.x * WG;
     }
-    var count = MiniCount(c.fa, c.fb, c.cols, c.strips, c.delta, c.strip_start);
-    var bla = c.la;
+    var count = MiniCount(c.fa, c.fb, c.cols, c.strips, c.delta, strip_start);
+    let this_la = c.la;
+    var bla = this_la;
     let blb = c.lb;
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_count[local_id.x] = count;
@@ -295,23 +292,59 @@ fn count_scan(
     }
     sh_count[local_id.x] = count;
     workgroupBarrier();
-    if local_id.x > 0 {
-        fa |= sh_count[local_id.x - 1].fb;
-    }
-    var cols = count_footprint(fa);
+    // sh_count now has inclusive scan of count semigroup
+    var cols = 0u;
     var delta = 0;
-    var strips = 0u;
+    var strip_count = 0u;
+    var fp = 0u;
     if local_id.x > 0 {
-        cols += sh_count[local_id.x - 1].cols;
-        if same_row(counts[global_id.x - 1].lb, bla) {
+        fp = sh_count[local_id.x - 1].fb;
+        cols = count_footprint(sh_count[local_id.x - 1].fa) + sh_count[local_id.x - 1].cols;
+        strip_count = sh_count[local_id.x - 1].strips;
+        let prev_lb = counts[global_id.x - 1].lb;
+        if same_row(prev_lb, this_la) {
             delta = sh_count[local_id.x - 1].delta;
         }
-        strips = sh_count[local_id.x - 1].strips;
+        let strip_boundary = !same_strip(prev_lb, this_la);
+        let seg_boundary = !loc_eq(prev_lb, this_la);
+        if !seg_boundary {
+            fp |= fa;
+        }
+        let strip_start = sh_count[local_id.x - 1].strip_start;
+        if (max(strip_start, 1u) & 1) != 0 && !loc_eq(prev_lb, blb) {
+            strips[strip_count].xy = 4 * prev_lb.xy + firstTrailingBit(fp);
+            strips[strip_count].col = cols;
+            strips[strip_count].sparse_width = 16u;
+        }
+        if seg_boundary {
+            if !strip_boundary {
+                fp |= 8u;
+            }
+            cols += count_footprint(fp);
+            fp = fa;
+            if strip_boundary {
+                strip_count += 1u;
+                if !loc_eq(this_la, blb) {
+                    strips[strip_count].xy = 4 * this_la.xy + firstTrailingBit(fp);
+                    strips[strip_count].col = cols;
+                    strips[strip_count].sparse_width = 17u;
+                }
+            } else {
+                fp |= 1u;
+            }
+        }
+    } else {
+        fp = fa;
+        if !loc_eq(this_la, blb) {
+            strips[0].xy = 4 * this_la.xy + firstTrailingBit(fp);
+            strips[0].col = 0u;
+        }
     }
+    cols += count_footprint(fp);
     counts[global_id.x].cols = cols;
     counts[global_id.x].delta = delta;
     // TODO: adjust strip count for boundaries
-    counts[global_id.x].strips = strips;
+    counts[global_id.x].strips = strip_count;
 }
 
 // spec for scan:
@@ -356,9 +389,6 @@ fn mk_strips(
         workgroupBarrier();
     }
     // debug info; remove
-    strips[global_id.x].width = sum;
-    strips[global_id.x].sparse_width = start_s;
-    strips[global_id.x].sparse_width = counts[local_id.x].strips;
     sh_histo[local_id.x] = sum;
     workgroupBarrier();
     var is_end = false;
@@ -400,6 +430,8 @@ fn mk_strips(
             // store start column
             // note: it would also make sense to store at strip end
             strips[strip_ix].col = col;
+            // this is for debug
+            strips[strip_ix].width = wg_id.x;
         }
     }
 }

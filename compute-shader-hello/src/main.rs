@@ -98,7 +98,10 @@ async fn run() {
     //let input_v = (0..256).map(|i| i as f32).collect::<Vec<_>>();
     let tiles = gen_tiles(256);
     let strips = mk_strips(&tiles);
-    for strip in strips.iter().take(32) {
+    // for i in 248..256 {
+    //    println!("{i}: {:?}", tiles[i]);
+    // }
+    for strip in strips.iter().take(64) {
         println!("{strip:x?}");
     }
     let input: &[u8] = bytemuck::cast_slice(&tiles);
@@ -268,14 +271,14 @@ async fn run() {
     // Assume that both buffers become available at the same time. A more careful
     // approach would be to wait for both notifications to be sent.
     query_slice.map_async(wgpu::MapMode::Read, |_| ());
-    println!("pre-poll {:?}", std::time::Instant::now());
     device.poll(wgpu::Maintain::Wait);
-    println!("post-poll {:?}", std::time::Instant::now());
     if let Some(Ok(())) = receiver.receive().await {
         let count_raw = count_slice.get_mapped_range();
         let count_data: &[Count] = bytemuck::cast_slice(&count_raw);
         for i in 0..n_wg {
             println!("{i}: {:?}", count_data[i]);
+            // let count = count_reduce(&tiles[i * 256..][..256]);
+            //println!("!: {:?}", count);
         }
         let data_raw = buf_slice.get_mapped_range();
         let data: &[Strip] = bytemuck::cast_slice(&data_raw);
@@ -382,6 +385,50 @@ fn mk_strips(tiles: &[Tile]) -> Vec<Strip> {
         prev_tile = tile;
     }
     strips
+}
+
+#[allow(unused)]
+fn count_reduce(tiles: &[Tile]) -> Count {
+    let mut start_s = 0;
+    let mut prev_tile = &tiles[0];
+    let mut fp = prev_tile.footprint.0;
+    let mut fa = 0;
+    let mut cols = 0;
+    let mut strips = 0;
+    for i in 1..tiles.len() {
+        let tile = &tiles[i];
+        if prev_tile.loc != tile.loc {
+            let same_strip = prev_tile.loc.same_strip(&tile.loc);
+            if same_strip {
+                fp |= 8;
+            }
+            if start_s == 0 {
+                fa = fp;
+            } else {
+                let col_count = 32 - (fp.leading_zeros() + fp.trailing_zeros());
+                cols += col_count;
+            }
+            strips += (!same_strip) as u32;
+            start_s = 2 * i as u32 + (!same_strip) as u32;
+            fp = if same_strip { 1 } else { 0 };
+        }
+        fp |= tile.footprint.0;
+        prev_tile = tile;
+    }
+    if start_s == 0 {
+        fa = fp;
+    }
+    // TODO: if we're going to compare to GPU shader, fill interior bits
+    Count {
+        fa: Footprint(fa),
+        fb: Footprint(fp),
+        cols,
+        strips,
+        delta: 0,
+        strip_start: start_s,
+        la: tiles[0].loc,
+        lb: tiles[tiles.len() - 1].loc,
+    }
 }
 
 fn main() {
