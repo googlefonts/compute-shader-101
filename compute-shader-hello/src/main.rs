@@ -45,6 +45,18 @@ struct Tile {
     delta: i32,
 }
 
+// TODO: use this instead of tile
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct Minitile {
+    path_ix: u32,
+    x: u16,
+    y: u16,
+    p0: u32, // packed
+    p1: u32, // packed
+}
+
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Count {
@@ -297,8 +309,34 @@ async fn run() {
     }
 }
 
+impl Minitile {
+    fn new(loc: Loc, footprint: Footprint, delta: i32) -> Self {
+        let p0 = (delta == -1) as u32 * 65536 + footprint.0.trailing_zeros() * 8192;
+        let p1 = (delta == 1) as u32 * 65536 + (32 - footprint.0.leading_zeros()) * 8192;
+        Minitile {
+            path_ix: loc.path_id,
+            x: loc.x,
+            y: loc.y,
+            p0,
+            p1,
+        }
+    }
+
+    fn loc(&self) -> Loc {
+        Loc { path_id: self.path_ix, x: self.x, y: self.y }
+    }
+
+    fn footprint(&self) -> Footprint {
+        let x0 = (self.p0 & 0xffff) as f32 * (1.0 / 8192.0);
+        let x1 = (self.p1 & 0xffff) as f32 * (1.0 / 8192.0);
+        let xmin = x0.min(x1).floor() as u32;
+        let xmax = x0.max(x1).ceil() as u32;
+        Footprint((1 << xmax) - (1 << xmin))
+    }
+}
+
 /// Generate plausible test data.
-fn gen_tiles(n_strips: usize) -> Vec<Tile> {
+fn gen_tiles(n_strips: usize) -> Vec<Minitile> {
     let mut rng = thread_rng();
     let mut v = vec![];
     let mut x = 0;
@@ -329,7 +367,7 @@ fn gen_tiles(n_strips: usize) -> Vec<Tile> {
                 };
                 let footprint = Footprint(this_fp as u32);
                 let delta = rng.gen_range(-1..=1);
-                let tile = Tile { loc, footprint, delta };
+                let tile = Minitile::new(loc, footprint, delta);
                 v.push(tile);
             }
             x += 1;
@@ -358,20 +396,20 @@ impl Loc {
 /// This is the CPU implementation of tile allocation, useful mostly for
 /// validating the GPU implementation. It can likely be adapted to a CPU
 /// shader.
-fn mk_strips(tiles: &[Tile]) -> Vec<Strip> {
+fn mk_strips(tiles: &[Minitile]) -> Vec<Strip> {
     let mut strips = vec![];
     let mut strip_start = true;
     let mut cols = 0;
     let mut prev_tile = &tiles[0];
-    let mut fp = prev_tile.footprint.0;
+    let mut fp = prev_tile.footprint().0;
     for tile in &tiles[1..] {
-        if prev_tile.loc != tile.loc {
-            let same_strip = prev_tile.loc.same_strip(&tile.loc);
+        if prev_tile.loc() != tile.loc() {
+            let same_strip = prev_tile.loc().same_strip(&tile.loc());
             if same_strip {
                 fp |= 8;
             }
             if strip_start {
-                let xy = (1 << 18) * prev_tile.loc.y as u32 + 4 * prev_tile.loc.x as u32 + fp.trailing_zeros();
+                let xy = (1 << 18) * prev_tile.loc().y as u32 + 4 * prev_tile.loc().x as u32 + fp.trailing_zeros();
                 let strip = Strip { xy, col: cols, width: 0, sparse_width: 0 };
                 strips.push(strip);
             }
@@ -380,7 +418,7 @@ fn mk_strips(tiles: &[Tile]) -> Vec<Strip> {
             fp = if same_strip { 1 } else { 0 };
             strip_start = !same_strip;
         }
-        fp |= tile.footprint.0;
+        fp |= tile.footprint().0;
         //println!("cols = {cols}, fp = {fp}");
         prev_tile = tile;
     }

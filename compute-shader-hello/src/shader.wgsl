@@ -57,14 +57,38 @@ struct Strip {
     sparse_width: u32,
 }
 
+// TODO: use this instead of tile
+struct Minitile {
+    path_id: u32,
+    xy: u32,
+    p0: u32, // packed
+    p1: u32, // packed
+}
+
 @group(0) @binding(0)
-var<storage> tiles: array<Tile>;
+var<storage> tiles: array<Minitile>;
 
 @group(0) @binding(1)
 var<storage, read_write> counts: array<Count>;
 
 @group(0) @binding(2)
 var<storage, read_write> strips: array<Strip>;
+
+fn mt_footprint(t: Minitile) -> u32 {
+    let x0 = f32(t.p0 & 0xffffu) * (1.0 / 8192.0);
+    let x1 = f32(t.p1 & 0xffffu) * (1.0 / 8192.0);
+    let xmin = u32(floor(min(x0, x1)));
+    let xmax = u32(ceil(max(x0, x1)));
+    return (1u << xmax) - (1u << xmin);
+}
+
+fn mt_delta(t: Minitile) -> i32 {
+    return i32((t.p1 >> 16u) == 0u) - i32((t.p0 >> 16u) == 0u);
+}
+
+fn mt_loc(t: Minitile) -> Loc {
+    return Loc(t.path_id, t.xy);
+}
 
 const WG = 256u;
 
@@ -177,12 +201,12 @@ fn count_reduce(
     var start_s = 0u;
     // Note: this matches slice_alloc, but another viable choice is to
     // use global_id; this would catch starts at beginning of partition
-    var fp = tile.footprint;
+    var fp = mt_footprint(tile);
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
-        if !loc_eq(prev_tile.loc, tile.loc) {
+        if !loc_eq(mt_loc(prev_tile), mt_loc(tile)) {
             start_s = local_id.x * 2;
-            if !same_strip(prev_tile.loc, tile.loc) {
+            if !same_strip(mt_loc(prev_tile), mt_loc(tile)) {
                 start_s += 1u;
                 atomicAdd(&sh_strips, 1u);
             } else {
@@ -190,22 +214,22 @@ fn count_reduce(
                 fp |= 1u;
             }
         }
-        if !same_row(prev_tile.loc, tile.loc) {
+        if !same_row(mt_loc(prev_tile), mt_loc(tile)) {
             atomicMax(&sh_row_start, local_id.x);
         }
     }
     var is_end = false;
     if local_id.x < WG - 1 {
         let next_tile = tiles[global_id.x + 1];
-        is_end = !loc_eq(tile.loc, next_tile.loc);
-        if is_end && same_strip(tile.loc, next_tile.loc) {
+        is_end = !loc_eq(mt_loc(tile), mt_loc(next_tile));
+        if is_end && same_strip(mt_loc(tile), mt_loc(next_tile)) {
             // same strip but different segment, extend fp toward msb
             fp |= 8u;
         }
     }
     // inclusive prefix sum of histo
     var sum = expand_footprint(fp);
-    var delta = tile.delta;
+    var delta = mt_delta(tile);
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_histo[local_id.x] = sum;
         sh_start[local_id.x] = start_s;
@@ -235,7 +259,7 @@ fn count_reduce(
         if start == 0 {
             counts[wg_id.x].fa = fp;
         }
-        counts[wg_id.x].lb = tile.loc;
+        counts[wg_id.x].lb = mt_loc(tile);
         let row_start = atomicLoad(&sh_row_start);
         if row_start != 0 {
             delta -= sh_delta[row_start - 1];
@@ -252,7 +276,7 @@ fn count_reduce(
     }
     workgroupBarrier();
     if local_id.x == 0 {
-        counts[wg_id.x].la = tile.loc;
+        counts[wg_id.x].la = mt_loc(tile);
         counts[wg_id.x].cols = atomicLoad(&sh_col_count);
         counts[wg_id.x].strips = atomicLoad(&sh_strips);
     }
@@ -370,12 +394,12 @@ fn mk_strips(
     // Note: could be global_ix, which would see boundaries at partition start
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
-        is_strip_start = !same_strip(prev_tile.loc, tile.loc);
-        is_seg_start = !loc_eq(prev_tile.loc, tile.loc);
+        is_strip_start = !same_strip(mt_loc(prev_tile), mt_loc(tile));
+        is_seg_start = !loc_eq(mt_loc(prev_tile), mt_loc(tile));
     }
     var strip_count = u32(is_strip_start);
     var start_s = select(0u, local_id.x * 2 + strip_count, is_seg_start);
-    var sum = expand_footprint(tile.footprint);
+    var sum = expand_footprint(mt_footprint(tile));
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_strip_count[local_id.x] = strip_count;
         sh_histo[local_id.x] = sum;
@@ -395,14 +419,14 @@ fn mk_strips(
     var cols_in = 0u;
     if local_id.x < WG - 1 {
         let next_tile = tiles[global_id.x + 1];
-        is_end = !loc_eq(tile.loc, next_tile.loc);
+        is_end = !loc_eq(mt_loc(tile), mt_loc(next_tile));
         if is_end && start_s != 0 {
             let histo = sum - sh_histo[start_s / 2 - 1];
             var fp = from_expanded(histo);
             if (start_s & 1) == 0 {
                 fp |= 1u;
             }
-            if same_strip(tile.loc, next_tile.loc) {
+            if same_strip(mt_loc(tile), mt_loc(next_tile)) {
                 fp |= 8u;
             }
             cols_in = count_footprint(fp);
@@ -424,7 +448,7 @@ fn mk_strips(
             // end of first segment of strip, output strip start
             let strip_ix = counts[wg_id.x].strips + strip_count;
             let histo = sum - sh_histo[(start_s / 2) - 1];
-            let xy = tile.loc.xy * 4 + firstTrailingBit(histo) / 8;
+            let xy = mt_loc(tile).xy * 4 + firstTrailingBit(histo) / 8;
             strips[strip_ix].xy = xy;
             let col = counts[wg_id.x].cols + cols - cols_in;
             // store start column
