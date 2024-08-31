@@ -173,6 +173,11 @@ fn combine_minicount(a: MiniCount, b: MiniCount, ala: Loc, alb: Loc, bla: Loc, b
     return MiniCount(fa, fb, cols, strips, delta, strip_start);
 }
 
+fn reduce_histo(histo: u32) -> u32 {
+    let tmp = (histo & 0xff00ffu) + ((histo >> 8u) & 0xff00ffu);
+    return (tmp >> 16u) + (tmp & 0xffffu);
+}
+
 // spec for reduce:
 // each partition generates count monoid
 // only the partition is considered; boundaries at partition
@@ -399,7 +404,8 @@ fn mk_strips(
     }
     var strip_count = u32(is_strip_start);
     var start_s = select(0u, local_id.x * 2 + strip_count, is_seg_start);
-    var sum = expand_footprint(mt_footprint(tile));
+    let local_histo = expand_footprint(mt_footprint(tile));
+    var sum = local_histo;
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_strip_count[local_id.x] = strip_count;
         sh_histo[local_id.x] = sum;
@@ -412,9 +418,13 @@ fn mk_strips(
         }
         workgroupBarrier();
     }
-    // debug info; remove
     sh_histo[local_id.x] = sum;
+    // store index of segment start; strip boundaries are needed
+    // for outputting strips, but not for rendering.
+    sh_start[local_id.x] = start_s / 2;
     workgroupBarrier();
+    // sh_histo is inclusive prefix sum of expanded footprints
+    // Note that with WG = 256, the last one might have overflow
     var is_end = false;
     var cols_in = 0u;
     if local_id.x < WG - 1 {
@@ -442,7 +452,7 @@ fn mk_strips(
         }
         workgroupBarrier();
     }
-    // cols is inclusive prefix sum of column counts
+    // cols is inclusive prefix sum of column counts of merged tiles
     if local_id.x < WG - 1 {
         if is_end && (start_s & 1) != 0 {
             // end of first segment of strip, output strip start
@@ -452,10 +462,44 @@ fn mk_strips(
             strips[strip_ix].xy = xy;
             let col = counts[wg_id.x].cols + cols - cols_in;
             // store start column
-            // note: it would also make sense to store at strip end
             strips[strip_ix].col = col;
             // this is for debug
             strips[strip_ix].width = wg_id.x;
+        }
+    }
+    // At this point, strips have been stored; rest of shader does rendering
+
+    // Note: if WG < 256, then we could just reduce_histo(sum)
+    // Note: we reuse sh_cols to save shared memory.
+    // sh_cols is inclusive prefix sum of per-tile column counts
+    sh_cols[local_id.x] = reduce_histo(local_histo) + reduce_histo(sum - local_histo);
+
+    // Total number of work items
+    let total_cols = workgroupUniformLoad(&sh_cols[WG - 1]);
+    // Conceptually, work items are arranged as follows. Each tile is repeated
+    // by its column footprint. Then this sequence is sorted according to
+    // (path_id, y, x) where here x has single-pixel precision. Note that
+    // (path_id, y, x / 4) is the existing segment key, so this sort is
+    // equivalent to a segmented sort by x % 4.
+    //
+    // Because this expanded sequence would take nontrivial shared memory, we
+    // don't materialize it. Rather, given the index into the sequence, we
+    // retrieve that element of the sequence by search.
+    let n_blocks = (total_cols + WG - 1) / WG;
+    for (var block_ix = 0u; block_ix < n_blocks; block_ix++) {
+        let ix = block_ix * WG + local_id.x;
+        // Binary search to find segment containing work item
+        var tile_ix = 0u;
+        for (var i = 0u; i < firstTrailingBit(WG); i++) {
+            let probe = tile_ix + ((WG / 2) >> i);
+            if ix > sh_cols[probe - 1u] {
+                tile_ix = probe;
+            }
+            let seg_start = sh_start[tile_ix];
+            var item_within_segment = ix;
+            if seg_start > 0 {
+                item_within_segment -= sh_cols[seg_start - 1];
+            }
         }
     }
 }
