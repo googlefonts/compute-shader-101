@@ -384,7 +384,9 @@ fn count_scan(
 // strips = exclusive prefix sum, but need to figure out behavior when
 // a strip boundary coincides with a partition boundary
 
+// Note: the following two have non-overlapping lifetimes, so can be combined
 var<workgroup> sh_strip_count: array<u32, WG>;
+var<workgroup> sh_seg_end: array<u32, WG>;
 
 // This just outputs strips, but will be combined with actual rendering
 @compute @workgroup_size(WG)
@@ -430,16 +432,20 @@ fn mk_strips(
     if local_id.x < WG - 1 {
         let next_tile = tiles[global_id.x + 1];
         is_end = !loc_eq(mt_loc(tile), mt_loc(next_tile));
-        if is_end && start_s != 0 {
-            let histo = sum - sh_histo[start_s / 2 - 1];
-            var fp = from_expanded(histo);
-            if (start_s & 1) == 0 {
-                fp |= 1u;
+        if is_end {
+            sh_seg_end[start_s / 2] = local_id.x;
+            // if ix is a segment start, sh_seg_end[ix] has the segment end
+            if start_s != 0 {
+                let histo = sum - sh_histo[start_s / 2 - 1];
+                var fp = from_expanded(histo);
+                if (start_s & 1) == 0 {
+                    fp |= 1u;
+                }
+                if same_strip(mt_loc(tile), mt_loc(next_tile)) {
+                    fp |= 8u;
+                }
+                cols_in = count_footprint(fp);
             }
-            if same_strip(mt_loc(tile), mt_loc(next_tile)) {
-                fp |= 8u;
-            }
-            cols_in = count_footprint(fp);
         }
     }
     // at the last tile of a complete segment, cols_in contains the column count
@@ -473,6 +479,10 @@ fn mk_strips(
     // Note: we reuse sh_cols to save shared memory.
     // sh_cols is inclusive prefix sum of per-tile column counts
     sh_cols[local_id.x] = reduce_histo(local_histo) + reduce_histo(sum - local_histo);
+    let seg_rel_histo = sum - select(0u, sh_histo[start_s / 2 - 1], start_s > 0);
+    workgroupBarrier();
+    sh_histo[local_id.x] = seg_rel_histo;
+    // sh_histo now contains segmented inclusive prefix sum of histograms
 
     // Total number of work items
     let total_cols = workgroupUniformLoad(&sh_cols[WG - 1]);
@@ -500,6 +510,35 @@ fn mk_strips(
             if seg_start > 0 {
                 item_within_segment -= sh_cols[seg_start - 1];
             }
+            // This is UMR if ix >= total_cols?
+            let seg_end = sh_seg_end[seg_start];
+            // TODO: handle 256 case (messy)
+            var last_histo = sh_histo[seg_end];
+            var item_within_col = item_within_segment;
+            var col = 0u;
+            while col < 3u {
+                let hist_val = last_histo & 0xff;
+                if item_within_col >= hist_val {
+                    item_within_col -= hist_val;
+                    last_histo >>= 8u;
+                    col++;
+                } else {
+                    break;
+                }
+            }
+            // col is x % 4 for work item ix
+            // binary search to find tile within column
+            var lo = seg_start;
+            var hi = seg_end + 1;
+            while hi > lo + 1 {
+                let mid = (lo + hi) / 2;
+                if item_within_col >= ((sh_histo[mid - 1] >> (col * 8)) & 0xff) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            // lo is index of tile for work item ix
         }
     }
 }
