@@ -78,7 +78,7 @@ fn mt_footprint(t: Minitile) -> u32 {
     let x0 = f32(t.p0 & 0xffffu) * (1.0 / 8192.0);
     let x1 = f32(t.p1 & 0xffffu) * (1.0 / 8192.0);
     let xmin = u32(floor(min(x0, x1)));
-    let xmax = u32(ceil(max(x0, x1)));
+    let xmax = max(xmin + 1, u32(ceil(max(x0, x1))));
     return (1u << xmax) - (1u << xmin);
 }
 
@@ -387,6 +387,8 @@ fn count_scan(
 // Note: the following two have non-overlapping lifetimes, so can be combined
 var<workgroup> sh_strip_count: array<u32, WG>;
 var<workgroup> sh_seg_end: array<u32, WG>;
+var<workgroup> sh_row_starts: array<u32, WG>;
+var<workgroup> sh_area: array<atomic<i32>, WG>;
 
 // This just outputs strips, but will be combined with actual rendering
 @compute @workgroup_size(WG)
@@ -398,25 +400,33 @@ fn mk_strips(
     let tile = tiles[global_id.x];
     var is_strip_start = false;
     var is_seg_start = false;
+    var is_row_start = false;
     // Note: could be global_ix, which would see boundaries at partition start
     if local_id.x > 0 {
         let prev_tile = tiles[global_id.x - 1];
         is_strip_start = !same_strip(mt_loc(prev_tile), mt_loc(tile));
         is_seg_start = !loc_eq(mt_loc(prev_tile), mt_loc(tile));
+        is_row_start = !same_strip(mt_loc(prev_tile), mt_loc(tile));
     }
     var strip_count = u32(is_strip_start);
     var start_s = select(0u, local_id.x * 2 + strip_count, is_seg_start);
+    var row_start = select(0u, local_id.x, is_row_start);
     let local_histo = expand_footprint(mt_footprint(tile));
     var sum = local_histo;
+    var delta = mt_delta(tile);
     for (var i = 0u; i < firstTrailingBit(WG); i++) {
         sh_strip_count[local_id.x] = strip_count;
         sh_histo[local_id.x] = sum;
         sh_start[local_id.x] = start_s;
+        sh_row_starts[local_id.x] = row_start;
+        sh_delta[local_id.x] = delta;
         workgroupBarrier();
         if local_id.x >= (1u << i) {
             strip_count += sh_strip_count[local_id.x - (1u << i)];
             sum += sh_histo[local_id.x - (1u << i)];
             start_s = max(start_s, sh_start[local_id.x - (1u << i)]);
+            row_start = max(row_start, sh_row_starts[local_id.x - (1u << i)]);
+            delta += sh_delta[local_id.x - (1u << i)];
         }
         workgroupBarrier();
     }
@@ -424,7 +434,19 @@ fn mk_strips(
     // store index of segment start; strip boundaries are needed
     // for outputting strips, but not for rendering.
     sh_start[local_id.x] = start_s / 2;
+    sh_delta[local_id.x] = delta;
     workgroupBarrier();
+    delta = 0;
+    if start_s > 0 {
+        delta = sh_delta[start_s / 2 - 1];
+    }
+    if row_start > 0 {
+        delta -= sh_delta[row_start - 1];
+    } else {
+        delta += counts[wg_id.x].delta;
+    }
+    // delta holds the coarse winding number at the start of the segment
+    // Also note: sh_row_start and sh_delta no longer needed, can reuse storage
     // sh_histo is inclusive prefix sum of expanded footprints
     // Note that with WG = 256, the last one might have overflow
     var is_end = false;
@@ -460,17 +482,27 @@ fn mk_strips(
     }
     // cols is inclusive prefix sum of column counts of merged tiles
     if local_id.x < WG - 1 {
-        if is_end && (start_s & 1) != 0 {
-            // end of first segment of strip, output strip start
-            let strip_ix = counts[wg_id.x].strips + strip_count;
-            let histo = sum - sh_histo[(start_s / 2) - 1];
-            let xy = mt_loc(tile).xy * 4 + firstTrailingBit(histo) / 8;
-            strips[strip_ix].xy = xy;
+        if is_end {
+            var histo = sum;
+            if start_s / 2 > 0 {
+                histo -= sh_histo[start_s / 2 - 1];
+            }
+            let xmod4 = firstTrailingBit(histo) / 8;
             let col = counts[wg_id.x].cols + cols - cols_in;
-            // store start column
-            strips[strip_ix].col = col;
-            // this is for debug
-            strips[strip_ix].width = wg_id.x;
+            // we reuse this array to conserve shared memory
+            sh_strip_count[start_s / 2] = col - xmod4;
+            // at this point, sh_strip_count at segment start contains
+            // offset to column storage
+            if (start_s & 1) != 0 {
+                // end of first segment of strip, output strip start
+                let strip_ix = counts[wg_id.x].strips + strip_count;
+                let xy = mt_loc(tile).xy * 4 + xmod4;
+                strips[strip_ix].xy = xy;
+                // store start column
+                strips[strip_ix].col = col;
+                // this is for debug
+                strips[strip_ix].width = wg_id.x;
+            }
         }
     }
     // At this point, strips have been stored; rest of shader does rendering
@@ -498,6 +530,7 @@ fn mk_strips(
     let n_blocks = (total_cols + WG - 1) / WG;
     for (var block_ix = 0u; block_ix < n_blocks; block_ix++) {
         let ix = block_ix * WG + local_id.x;
+        var alphas = 0u;
         // Binary search to find segment containing work item
         var tile_ix = 0u;
         for (var i = 0u; i < firstTrailingBit(WG); i++) {
@@ -505,40 +538,68 @@ fn mk_strips(
             if ix > sh_cols[probe - 1u] {
                 tile_ix = probe;
             }
-            let seg_start = sh_start[tile_ix];
-            var item_within_segment = ix;
-            if seg_start > 0 {
-                item_within_segment -= sh_cols[seg_start - 1];
+        }
+        let seg_start = sh_start[tile_ix];
+        var item_within_segment = ix;
+        if seg_start > 0 {
+            item_within_segment -= sh_cols[seg_start - 1];
+        }
+        // This is UMR if ix >= total_cols?
+        let seg_end = sh_seg_end[seg_start];
+        // TODO: handle 256 case (messy)
+        var last_histo = sh_histo[seg_end];
+        var item_within_col = item_within_segment;
+        var col = 0u;
+        while col < 3u {
+            let hist_val = last_histo & 0xff;
+            if item_within_col >= hist_val {
+                item_within_col -= hist_val;
+                last_histo >>= 8u;
+                col++;
+            } else {
+                break;
             }
-            // This is UMR if ix >= total_cols?
-            let seg_end = sh_seg_end[seg_start];
-            // TODO: handle 256 case (messy)
-            var last_histo = sh_histo[seg_end];
-            var item_within_col = item_within_segment;
-            var col = 0u;
-            while col < 3u {
-                let hist_val = last_histo & 0xff;
-                if item_within_col >= hist_val {
-                    item_within_col -= hist_val;
-                    last_histo >>= 8u;
-                    col++;
-                } else {
-                    break;
-                }
+        }
+        // col is x % 4 for work item ix
+        // binary search to find tile within column
+        var lo = seg_start;
+        var hi = seg_end + 1;
+        while hi > lo + 1 {
+            let mid = (lo + hi) / 2;
+            if item_within_col >= ((sh_histo[mid - 1] >> (col * 8)) & 0xff) {
+                lo = mid;
+            } else {
+                hi = mid;
             }
-            // col is x % 4 for work item ix
-            // binary search to find tile within column
-            var lo = seg_start;
-            var hi = seg_end + 1;
-            while hi > lo + 1 {
-                let mid = (lo + hi) / 2;
-                if item_within_col >= ((sh_histo[mid - 1] >> (col * 8)) & 0xff) {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
+        }
+        // lo is index of tile for work item ix
+        let render_tile = tiles[wg_id.x * WG + lo];
+        var area = 0;
+        for (var y = 0u; y < 4u; y++) {
+            if item_within_col == 0 {
+                atomicStore(&sh_area[local_id.x], 0);
             }
-            // lo is index of tile for work item ix
+            workgroupBarrier();
+            // TODO: carryover logic
+            // TODO: compute area from tile
+            atomicAdd(&sh_area[local_id.x - item_within_col], area);
+            workgroupBarrier();
+            if item_within_col == 0 {
+                area = atomicLoad(&sh_area[local_id.x]);
+                // nonzero winding number; here's where we'd do even-odd
+                area = abs(area);
+                let alpha_val = min((area * 255) >> 16, 255);
+                alphas += u32(alpha_val) << (8 * y);
+            }
+        }
+        if item_within_col == 0 {
+            // TODO: store
+            // column for storage is column of segment start minus
+            // x location of column start (lsb of footprint) plus col.
+            // don't store last incomplete segment
+            if sh_start[WG - 1] != seg_start {
+                let col_store_ix = sh_cols[seg_start] + col;
+            }
         }
     }
 }
