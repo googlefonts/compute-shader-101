@@ -28,16 +28,17 @@ struct Config {
 }
 
 struct Strip {
-    path_id: u32,
-    y: u32,
-    x0: u32,
-    x1: u32,
+    // TODO: probably need path_id here, but we can run this in a mode
+    // where we render each path separately.
+    xy: u32, // this could be u16's on the Rust side
+    col: u32,
+    winding: i32,
 }
 
-@group(0) @binding(2)
+@group(0) @binding(1)
 var<uniform> config: Config;
 
-@group(0) @binding(3)
+@group(0) @binding(2)
 var<storage> strips: array<Strip>;
 
 @vertex
@@ -49,21 +50,27 @@ fn vs_main(
     let x = f32(in_vertex_index & 1u);
     let y = f32(in_vertex_index >> 1u);
     let strip = strips[in_instance_index];
-    let pix_x = f32(strip.x0) + (f32(strip.x1) - f32(strip.x0)) * x;
-    let pix_y = (f32(strip.y) + y) * f32(config.strip_height);
+    let next_strip = strips[in_instance_index + 1u];
+    let x0 = strip.xy & 0xffffu;
+    let y0 = strip.xy >> 16u;
+    let width = next_strip.col - strip.col;
+    let pix_x = f32(x0) + f32(width) * x;
+    let pix_y = f32(y0) + y * f32(config.strip_height);
     let gl_x = (pix_x + 0.5) * 2.0 / f32(config.width) - 1.0;
     let gl_y = 1.0 - (pix_y + 0.5) * 2.0 / f32(config.height);
     out.position = vec4<f32>(gl_x, gl_y, 0.0, 1.0);
-    out.tex_coord = vec2<f32>(x, y);
+    out.tex_coord = vec2<f32>(f32(strip.col) + x * f32(width), y * f32(config.strip_height));
     return out;
 }
 
 @group(0) @binding(0)
-var r_color: texture_2d<f32>;
-@group(0) @binding(1)
-var r_sampler: sampler;
+var<storage> alphas: array<u32>;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(r_color, r_sampler, in.tex_coord);
+    let x = u32(floor(in.tex_coord.x));
+    let y = u32(floor(in.tex_coord.y));
+    let a = alphas[x];
+    let alpha = f32((a >> (y * 8u)) & 0xffu) * (1.0 / 255.0);
+    return alpha * vec4(1.0, 1.0, 1.0, 1.0);
 }

@@ -16,11 +16,16 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
+mod strip;
+mod tiling;
+
+use strip::Strip;
+
 use std::io::{BufReader, BufRead};
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
-use wgpu::{BufferUsages, Extent3d, SamplerBindingType};
+use wgpu::{BlendState, BufferUsages, ColorTargetState, ColorWrites, Extent3d, SamplerBindingType};
 
 use winit::dpi::PhysicalSize;
 use winit::window::WindowBuilder;
@@ -38,16 +43,7 @@ struct Config {
     strip_height: u32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct Strip {
-    path_id: u32,
-    y: u32,
-    x0: u32,
-    x1: u32,
-}
-
-async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
+async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas: &[u32]) {
     let instance = wgpu::Instance::new(Default::default());
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance
@@ -97,22 +93,15 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        // Should filterable be false if we want nearest-neighbor?
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -122,7 +111,7 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -149,7 +138,11 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
         fragment: Some(wgpu::FragmentState {
             module: &copy_shader,
             entry_point: "fs_main",
-            targets: &[Some(format.into())],
+            targets: &[Some(ColorTargetState {
+                format,
+                blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -162,6 +155,11 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
     let strip_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&strips),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let alpha_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&alphas),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -260,18 +258,14 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&img_view),
+                resource: alpha_buf.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
                 resource: config_buf.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: 3,
+                binding: 2,
                 resource: strip_buf.as_entire_binding(),
             },
         ],
@@ -314,7 +308,7 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                                load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
@@ -324,7 +318,7 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
                     });
                     rpass.set_pipeline(&render_pipeline);
                     rpass.set_bind_group(0, &copy_bind_group, &[]);
-                    rpass.draw(0..4, 0..n_strips);
+                    rpass.draw(0..4, 0..(n_strips - 1));
                 }
                 queue.submit(Some(encoder.finish()));
                 frame.present();
@@ -342,26 +336,13 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip]) {
 }
 
 fn main() {
-    let filename = std::env::args().nth(1).expect("need filename");
-    let f = std::fs::File::open(filename).unwrap();
-    let buffered = BufReader::new(f);
-    let mut strips = vec![];
-    for line in buffered.lines() {
-        let l = line.unwrap();
-        let s = l.split(' ').collect::<Vec<_>>();
-        if s.first() == Some(&"strip") {
-            let path_id = s[3].strip_suffix(',').unwrap().parse().unwrap();
-            let y = s[6].strip_suffix(',').unwrap().parse().unwrap();
-            let x0 = s[7].split("..").nth(0).unwrap().parse().unwrap();
-            let x1 = s[8].parse().unwrap();
-            strips.push(Strip { path_id, y, x0, x1 });
-        }
-    }
+    let (strips, alphas) = strip::make_strips();
+    println!("{strips:x?}");
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_inner_size(PhysicalSize::new(2048, 2048))
         .build(&event_loop)
         .unwrap();
     window.set_resizable(false);
-    pollster::block_on(run(event_loop, window, &strips));
+    pollster::block_on(run(event_loop, window, &strips, &alphas));
 }
