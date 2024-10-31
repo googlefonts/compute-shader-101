@@ -55,6 +55,8 @@ impl Loc {
 }
 
 impl Tile {
+    #[allow(unused)]
+    /// Create a tile from synthetic data.
     fn new(loc: Loc, footprint: Footprint, delta: i32) -> Self {
         let p0 = (delta == -1) as u32 * 65536 + footprint.0.trailing_zeros() * 8192;
         let p1 = (delta == 1) as u32 * 65536 + (32 - footprint.0.leading_zeros()) * 8192;
@@ -196,6 +198,21 @@ pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
     ];
     let mut tiles = make_tiles(&lines);
     tiles.sort_by(Tile::cmp);
+    // This particular choice of sentinel tiles generates a sentinel strip.
+    tiles.push(Tile {
+        path_id: !1,
+        x: 0x3fff,
+        y: 0x3fff,
+        p0: 0,
+        p1: 0,
+    });
+    tiles.push(Tile {
+        path_id: !0,
+        x: 0x3fff,
+        y: 0x3fff,
+        p0: 0,
+        p1: 0,
+    });
     // for tile in &tiles {
     //     println!("{tile:?}");
     // }

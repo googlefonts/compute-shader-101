@@ -18,6 +18,7 @@
 
 struct VertexOutput {
     @location(0) tex_coord: vec2<f32>,
+    @location(1) @interpolate(flat) dense_end: u32,
     @builtin(position) position: vec4<f32>,
 };
 
@@ -53,7 +54,11 @@ fn vs_main(
     let next_strip = strips[in_instance_index + 1u];
     let x0 = strip.xy & 0xffffu;
     let y0 = strip.xy >> 16u;
-    let width = next_strip.col - strip.col;
+    var width = next_strip.col - strip.col;
+    out.dense_end = strip.col + width;
+    if strip.winding != 0 && y0 == next_strip.xy >> 16u {
+        width = (next_strip.xy & 0xffffu) - x0;
+    }
     let pix_x = f32(x0) + f32(width) * x;
     let pix_y = f32(y0) + y * f32(config.strip_height);
     let gl_x = (pix_x + 0.5) * 2.0 / f32(config.width) - 1.0;
@@ -69,8 +74,11 @@ var<storage> alphas: array<u32>;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let x = u32(floor(in.tex_coord.x));
-    let y = u32(floor(in.tex_coord.y));
-    let a = alphas[x];
-    let alpha = f32((a >> (y * 8u)) & 0xffu) * (1.0 / 255.0);
+    var alpha = 1.0;
+    if x < in.dense_end {
+        let y = u32(floor(in.tex_coord.y));
+        let a = alphas[x];
+        alpha = f32((a >> (y * 8u)) & 0xffu) * (1.0 / 255.0);
+    }
     return alpha * vec4(1.0, 1.0, 1.0, 1.0);
 }
