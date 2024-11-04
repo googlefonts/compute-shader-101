@@ -12,3 +12,7 @@ winit = "0.28"
 pollster = "0.3"
 async-executor = "1.8"
 bytemuck = { version = "1.14", features = ["derive"] }
+
+# TODO: we can reference github for this
+flatten = { path = "../../gpu-stroke-expansion-paper/flatten" }
+kurbo = "0.11"

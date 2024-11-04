@@ -16,6 +16,7 @@
 
 //! A simple compute shader example that draws into a window, based on wgpu.
 
+mod flatten;
 mod strip;
 mod tiling;
 

@@ -1,8 +1,9 @@
 // CPU implementation of sparse strip rendering
 
 use bytemuck::{Pod, Zeroable};
+use kurbo::BezPath;
 
-use crate::tiling::{make_tiles, LineSoup, Vec2};
+use crate::tiling::{make_tiles, Vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Loc {
@@ -191,11 +192,16 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
 }
 
 pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
-    let lines = [
-        LineSoup::new(0, [10., 10.], [100., 30.]),
-        LineSoup::new(0, [100., 30.], [20., 100.]),
-        LineSoup::new(0, [20., 100.], [10., 10.]),
-    ];
+    let mut path = BezPath::new();
+    path.move_to((10., 10.));
+    path.line_to((100., 30.));
+    path.line_to((20., 100.));
+    path.close_path();
+    let mut lines = Vec::new();
+    crate::flatten::flatten(&path, 0, &mut lines);
+    for line in &lines {
+        println!("{} {:?} {:?}", line.path_ix, line.p0, line.p1);
+    }
     let mut tiles = make_tiles(&lines);
     tiles.sort_by(Tile::cmp);
     // This particular choice of sentinel tiles generates a sentinel strip.
@@ -216,6 +222,5 @@ pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
     // for tile in &tiles {
     //     println!("{tile:?}");
     // }
-    //let tiles = gen_tiles(1024);
     render_strips(&tiles)
 }
