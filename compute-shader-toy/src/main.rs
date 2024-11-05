@@ -19,6 +19,7 @@
 mod flatten;
 mod strip;
 mod tiling;
+mod visualize;
 
 use strip::Strip;
 
@@ -327,12 +328,15 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
 
 fn main() {
     let (strips, alphas) = strip::make_strips();
-    println!("{strips:x?}");
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_inner_size(PhysicalSize::new(2048, 2048))
-        .build(&event_loop)
-        .unwrap();
-    window.set_resizable(false);
-    pollster::block_on(run(event_loop, window, &strips, &alphas));
+    //visualize::visualize_strips(&strips, &alphas);
+    //println!("{strips:x?}");
+    if true {
+        let event_loop = EventLoop::new();
+        let window = WindowBuilder::new()
+            .with_inner_size(PhysicalSize::new(2048, 2048))
+            .build(&event_loop)
+            .unwrap();
+        window.set_resizable(false);
+        pollster::block_on(run(event_loop, window, &strips, &alphas));
+    }
 }

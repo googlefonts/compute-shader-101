@@ -40,9 +40,9 @@ impl std::fmt::Debug for Tile {
 pub struct Strip {
     // TODO: probably need path_id here, but we can run this in a mode
     // where we render each path separately.
-    xy: u32, // this could be u16's on the Rust side
-    col: u32,
-    winding: i32,
+    pub xy: u32, // this could be u16's on the Rust side
+    pub col: u32,
+    pub winding: i32,
 }
 
 impl Loc {
@@ -109,18 +109,22 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
     let mut prev_tile = &tiles[0];
     let mut fp = prev_tile.footprint().0;
     let mut seg_start = 0;
-    let mut start_delta = 0;
-    let mut delta = prev_tile.delta();
+    let mut delta = 0;
     // Note: add a sentinel tile in input
     for i in 1..tiles.len() {
         let tile = &tiles[i];
+        //println!("{tile:?}");
         if prev_tile.loc() != tile.loc() {
+            let start_delta = delta;
             let same_strip = prev_tile.loc().same_strip(&tile.loc());
             if same_strip {
                 fp |= 8;
             }
             let x0 = fp.trailing_zeros();
             let x1 = 32 - fp.leading_zeros();
+            for tile in &tiles[seg_start..i] {
+                delta += tile.delta();
+            }
             // (x0..x1) is range of columns we need to render
             for x in x0..x1 {
                 let mut areas = [start_delta as f32; 4];
@@ -170,7 +174,7 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
                 let strip = Strip {
                     xy,
                     col: cols,
-                    winding: delta,
+                    winding: start_delta,
                 };
                 strips.push(strip);
             }
@@ -178,12 +182,9 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
             fp = if same_strip { 1 } else { 0 };
             strip_start = !same_strip;
             seg_start = i;
-            start_delta = if prev_tile.loc().same_row(&tile.loc()) {
-                delta
-            } else {
-                0
-            };
-            delta += tile.delta();
+            if !prev_tile.loc().same_row(&tile.loc()) {
+                delta = 0;
+            }
         }
         fp |= tile.footprint().0;
         prev_tile = tile;
@@ -193,15 +194,12 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
 
 pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
     let mut path = BezPath::new();
-    path.move_to((10., 10.));
+    path.move_to((2., 2.));
     path.line_to((100., 30.));
     path.line_to((20., 100.));
     path.close_path();
     let mut lines = Vec::new();
     crate::flatten::flatten(&path, 0, &mut lines);
-    for line in &lines {
-        println!("{} {:?} {:?}", line.path_ix, line.p0, line.p1);
-    }
     let mut tiles = make_tiles(&lines);
     tiles.sort_by(Tile::cmp);
     // This particular choice of sentinel tiles generates a sentinel strip.

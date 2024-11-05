@@ -101,7 +101,6 @@ pub fn make_tiles(lines: &[LineSoup]) -> Vec<Tile> {
         let s1 = orig_xy1 * TILE_SCALE_Y;
         let count_x = span(s0.x, s1.x) - 1;
         let count = count_x + span(s0.y, s1.y);
-        println!("handling line {} {:?} {:?}, count={count}", line.path_ix, line.p0, line.p1);
 
         let dx = (s1.x - s0.x).abs();
         let dy = s1.y - s0.y;

@@ -56,7 +56,7 @@ fn vs_main(
     let y0 = strip.xy >> 16u;
     var width = next_strip.col - strip.col;
     out.dense_end = strip.col + width;
-    if strip.winding != 0 && y0 == next_strip.xy >> 16u {
+    if next_strip.winding != 0 && y0 == next_strip.xy >> 16u {
         width = (next_strip.xy & 0xffffu) - x0;
     }
     let pix_x = f32(x0) + f32(width) * x;
