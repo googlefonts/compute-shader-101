@@ -16,3 +16,7 @@ bytemuck = { version = "1.14", features = ["derive"] }
 # TODO: we can reference github for this
 flatten = { path = "../../gpu-stroke-expansion-paper/flatten" }
 kurbo = "0.11"
+
+# for pico_svg
+roxmltree = "0.20.0"
+peniko = "0.2.0"

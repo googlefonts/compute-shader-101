@@ -20,13 +20,15 @@ pub fn visualize_strips(strips: &[Strip], alphas: &[u32]) {
             for y in 0..4 {
                 let g = (a >> (y * 8)) & 0xff;
                 let rgb = (255 - g) * 0x10101;
-                println!("  <rect x='{}' y='{}' width='{CELL}' height='{CELL}' fill='#{rgb:06x}' />",
+                println!(
+                    "  <rect x='{}' y='{}' width='{CELL}' height='{CELL}' fill='#{rgb:06x}' />",
                     (strip_x + x) as f32 * SCALE + INSET,
                     strip_y as f32 * SCALE + y as f32 * (CELL + INSET) + INSET,
                 );
             }
         }
-        println!("  <rect x='{}' y='{}' width='{}' height='{}' fill='none' stroke='#000' />",
+        println!(
+            "  <rect x='{}' y='{}' width='{}' height='{}' fill='none' stroke='#000' />",
             strip_x as f32 * SCALE + INSET,
             strip_y as f32 * SCALE + INSET,
             width as f32 * SCALE - 2.0 * INSET,
@@ -36,13 +38,13 @@ pub fn visualize_strips(strips: &[Strip], alphas: &[u32]) {
             let next_x = next_strip.xy & 0xffff;
             let next_y = next_strip.xy >> 16;
             if strip_y == next_y {
-                println!("  <rect x='{}' y='{}' width='{}' height='{}' fill='#888' />",
+                println!(
+                    "  <rect x='{}' y='{}' width='{}' height='{}' fill='#888' />",
                     (strip_x + width) as f32 * SCALE + INSET,
                     strip_y as f32 * SCALE + INSET,
                     (next_x - strip_x - width) as f32 * SCALE - 2.0 * INSET,
                     4.0 * SCALE - 2.0 * INSET,
                 );
-
             }
         }
     }

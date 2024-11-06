@@ -17,15 +17,19 @@
 //! A simple compute shader example that draws into a window, based on wgpu.
 
 mod flatten;
+mod pico_svg;
+mod scene;
 mod strip;
 mod tiling;
 mod visualize;
 
+use flatten::SoupBowl;
+use pico_svg::PicoSvg;
 use strip::Strip;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
-use wgpu::{BlendState, BufferUsages, ColorTargetState, ColorWrites, Extent3d};
+use wgpu::{BlendState, BufferUsages, ColorTargetState, ColorWrites, Extent3d, TextureFormat};
 
 use winit::dpi::PhysicalSize;
 use winit::window::WindowBuilder;
@@ -45,7 +49,13 @@ struct Config {
 
 // Maybe we should make a struct with the render data.
 
-async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas: &[u32], colors: &[u32]) {
+async fn run(
+    event_loop: EventLoop<()>,
+    window: Window,
+    strips: &[Strip],
+    alphas: &[u32],
+    colors: &[u32],
+) {
     let instance = wgpu::Instance::new(Default::default());
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance
@@ -63,10 +73,13 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
         .expect("error creating device");
     let size = window.inner_size();
     let swapchain_capabilities = surface.get_capabilities(&adapter);
-    let format = swapchain_capabilities.formats[0];
+    let mut format = swapchain_capabilities.formats[0];
+    if format == TextureFormat::Bgra8UnormSrgb {
+        format = TextureFormat::Bgra8Unorm;
+    }
     let sc = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: format,
+        format,
         width: size.width,
         height: size.height,
         present_mode: wgpu::PresentMode::AutoNoVsync,
@@ -74,7 +87,11 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
         view_formats: vec![],
     };
     surface.configure(&device, &sc);
-    let config = Config { width: size.width, height: size.height, strip_height: 4 };
+    let config = Config {
+        width: size.width,
+        height: size.height,
+        strip_height: 4,
+    };
     let config_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::bytes_of(&config),
@@ -348,7 +365,15 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
 }
 
 fn main() {
-    let (strips, alphas, colors) = strip::make_strips();
+    let mut lines = SoupBowl::default();
+    if let Some(filename) = std::env::args().nth(1) {
+        let svg = std::fs::read_to_string(filename).expect("error reading file");
+        let parsed = PicoSvg::load(&svg, 1.0).expect("error parsing SVG");
+        scene::flatten_svg(&mut lines, &parsed.items, 8.0);
+    } else {
+        scene::create_basic_scene(&mut lines);
+    }
+    let (strips, alphas, colors) = strip::make_strips(lines);
     //visualize::visualize_strips(&strips, &alphas);
     //println!("{strips:x?}");
     if true {
