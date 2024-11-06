@@ -19,6 +19,7 @@
 struct VertexOutput {
     @location(0) tex_coord: vec2<f32>,
     @location(1) @interpolate(flat) dense_end: u32,
+    @location(2) @interpolate(flat) color: u32,
     @builtin(position) position: vec4<f32>,
 };
 
@@ -31,6 +32,7 @@ struct Config {
 struct Strip {
     // TODO: probably need path_id here, but we can run this in a mode
     // where we render each path separately.
+    path_id: u32,
     xy: u32, // this could be u16's on the Rust side
     col: u32,
     winding: i32,
@@ -41,6 +43,9 @@ var<uniform> config: Config;
 
 @group(0) @binding(2)
 var<storage> strips: array<Strip>;
+
+@group(0) @binding(3)
+var<storage> colors: array<u32>;
 
 @vertex
 fn vs_main(
@@ -65,6 +70,7 @@ fn vs_main(
     let gl_y = 1.0 - (pix_y + 0.5) * 2.0 / f32(config.height);
     out.position = vec4<f32>(gl_x, gl_y, 0.0, 1.0);
     out.tex_coord = vec2<f32>(f32(strip.col) + x * f32(width), y * f32(config.strip_height));
+    out.color = colors[strip.path_id];
     return out;
 }
 
@@ -80,5 +86,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let a = alphas[x];
         alpha = f32((a >> (y * 8u)) & 0xffu) * (1.0 / 255.0);
     }
-    return alpha * vec4(1.0, 1.0, 1.0, 1.0);
+    return alpha * unpack4x8unorm(in.color);
 }

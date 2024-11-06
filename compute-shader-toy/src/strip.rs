@@ -1,9 +1,9 @@
 // CPU implementation of sparse strip rendering
 
 use bytemuck::{Pod, Zeroable};
-use kurbo::BezPath;
+use kurbo::{Affine, BezPath, Stroke};
 
-use crate::tiling::{make_tiles, Vec2};
+use crate::{flatten::SoupBowl, tiling::{make_tiles, Vec2}};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Loc {
@@ -38,8 +38,7 @@ impl std::fmt::Debug for Tile {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
 pub struct Strip {
-    // TODO: probably need path_id here, but we can run this in a mode
-    // where we render each path separately.
+    pub path_id: u32,
     pub xy: u32, // this could be u16's on the Rust side
     pub col: u32,
     pub winding: i32,
@@ -172,6 +171,7 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
             if strip_start {
                 let xy = (1 << 18) * prev_tile.y as u32 + 4 * prev_tile.x as u32 + x0;
                 let strip = Strip {
+                    path_id: tile.path_id,
                     xy,
                     col: cols,
                     winding: start_delta,
@@ -192,15 +192,18 @@ fn render_strips(tiles: &[Tile]) -> (Vec<Strip>, Vec<u32>) {
     (strips, out)
 }
 
-pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
+pub fn make_strips() -> (Vec<Strip>, Vec<u32>, Vec<u32>) {
     let mut path = BezPath::new();
     path.move_to((2., 2.));
     path.line_to((100., 30.));
     path.line_to((20., 100.));
     path.close_path();
-    let mut lines = Vec::new();
-    crate::flatten::flatten(&path, 0, &mut lines);
-    let mut tiles = make_tiles(&lines);
+    let mut lines = SoupBowl::default();
+    let style = Stroke::new(1.0);
+    lines.stroke(&path, &style, 0xff_00_ff_ff);
+    let path2 = Affine::translate((0.0, 200.0)) * path;
+    lines.fill(&path2, 0xff_ff_00_00);
+    let mut tiles = make_tiles(&lines.lines);
     tiles.sort_by(Tile::cmp);
     // This particular choice of sentinel tiles generates a sentinel strip.
     tiles.push(Tile {
@@ -220,5 +223,6 @@ pub fn make_strips() -> (Vec<Strip>, Vec<u32>) {
     // for tile in &tiles {
     //     println!("{tile:?}");
     // }
-    render_strips(&tiles)
+    let (strips, alpha) = render_strips(&tiles);
+    (strips, alpha, lines.colors)
 }

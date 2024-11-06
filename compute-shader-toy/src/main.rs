@@ -43,7 +43,9 @@ struct Config {
     strip_height: u32,
 }
 
-async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas: &[u32]) {
+// Maybe we should make a struct with the render data.
+
+async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas: &[u32], colors: &[u32]) {
     let instance = wgpu::Instance::new(Default::default());
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance
@@ -120,6 +122,16 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -160,6 +172,11 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
     let alpha_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&alphas),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let color_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&colors),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -259,6 +276,10 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
                 binding: 2,
                 resource: strip_buf.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: color_buf.as_entire_binding(),
+            },
         ],
     });
     let start_time = std::time::Instant::now();
@@ -327,7 +348,7 @@ async fn run(event_loop: EventLoop<()>, window: Window, strips: &[Strip], alphas
 }
 
 fn main() {
-    let (strips, alphas) = strip::make_strips();
+    let (strips, alphas, colors) = strip::make_strips();
     //visualize::visualize_strips(&strips, &alphas);
     //println!("{strips:x?}");
     if true {
@@ -337,6 +358,6 @@ fn main() {
             .build(&event_loop)
             .unwrap();
         window.set_resizable(false);
-        pollster::block_on(run(event_loop, window, &strips, &alphas));
+        pollster::block_on(run(event_loop, window, &strips, &alphas, &colors));
     }
 }
