@@ -30,7 +30,7 @@ use winit::{
 async fn run(event_loop: EventLoop<()>, window: Window) {
     let window = Arc::new(window);
     let window_clone = window.clone();
-    let instance = wgpu::Instance::new(Default::default());
+    let instance = wgpu::Instance::new(&Default::default());
     let surface = instance.create_surface(&window).unwrap();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -100,13 +100,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &copy_shader,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
             buffers: &[],
             compilation_options: PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &copy_shader,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             targets: &[Some(format.into())],
             compilation_options: PipelineCompilationOptions::default(),
         }),
@@ -181,7 +181,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         label: None,
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
-        entry_point: "main",
+        entry_point: Some("main"),
         cache: None,
         compilation_options: PipelineCompilationOptions::default(),
     });

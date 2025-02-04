@@ -23,7 +23,7 @@ use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 use bytemuck;
 
 async fn run() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = instance.request_adapter(&Default::default()).await.unwrap();
     let features = adapter.features();
     let (device, queue) = adapter
@@ -101,7 +101,7 @@ async fn run() {
         label: None,
         layout: Some(&compute_pipeline_layout),
         module: &cs_module,
-        entry_point: "main",
+        entry_point: Some("main"),
         cache: None,
         compilation_options: PipelineCompilationOptions::default(),
     });
